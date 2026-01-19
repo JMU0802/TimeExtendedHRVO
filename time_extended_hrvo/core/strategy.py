@@ -265,10 +265,10 @@ def generate_marine_strategy_space(include_speed_change=False, mode='heading_onl
     """
     生成适用于海上船舶的策略空间
 
-    特点：
-    - 优先改向而非减速
-    - 符合 COLREGs 右转优先原则
-    - 支持多种避让模式
+    核心原则（所有模式都遵循）：
+    1. 右转优先（COLREGs合规）
+    2. 最大转向角90度
+    3. 改向优先于减速（除非speed_only模式）
 
     转向约定: 正值=右转(Starboard)，负值=左转(Port)
 
@@ -276,24 +276,24 @@ def generate_marine_strategy_space(include_speed_change=False, mode='heading_onl
         include_speed_change: 是否包含速度改变策略（紧急情况时设为True）
         mode: 避让模式
             - 'heading_only': 仅航向避让（只改向，不改速）
-            - 'speed_only': 仅航速避让（只改速，不改向）
-            - 'combined': 组合避让（同时改向改速）
+            - 'speed_only': 仅航速避让（主要改速，可配合小幅右转）
+            - 'combined': 组合避让（改向+改速，右转优先）
 
     Returns:
         list[AvoidanceStrategy]: 策略列表
     """
     if mode == 'heading_only':
-        # 纯航向避让模式
+        # 纯航向避让模式：只改向，不改速
         strategies = generate_pure_heading_strategies()
         if include_speed_change:
             strategies.extend(generate_emergency_strategies())
     elif mode == 'speed_only':
-        # 纯航速避让模式
-        strategies = generate_speed_only_strategies()
+        # 航速避让模式：主要改速，可配合小幅右转
+        strategies = generate_speed_priority_strategies()
         if include_speed_change:
             strategies.extend(generate_emergency_speed_strategies())
     elif mode == 'combined':
-        # 组合避让模式
+        # 组合避让模式：改向+改速，右转优先，最大90度
         strategies = generate_combined_strategies()
         if include_speed_change:
             strategies.extend(generate_emergency_strategies())
@@ -306,26 +306,42 @@ def generate_marine_strategy_space(include_speed_change=False, mode='heading_onl
     return strategies
 
 
-def generate_speed_only_strategies():
+def generate_speed_priority_strategies():
     """
-    生成纯航速避让策略空间
+    生成航速优先避让策略空间
 
-    只改变速度，不改变航向
+    以改变速度为主，可配合小幅度右转
+    - 右转优先（最大90度）
     - 减速策略（主要）
     - 加速策略（追越时可用）
 
     Returns:
-        list[AvoidanceStrategy]: 纯航速策略列表
+        list[AvoidanceStrategy]: 航速优先策略列表
     """
     strategies = []
 
-    # 减速策略（主要避让方式）
+    # 纯减速策略（主要避让方式）
     for du in [-0.5, -1.0, -1.5, -2.0, -2.5, -3.0]:
         strategies.append(AvoidanceStrategy(0.0, du))
+
+    # 小幅右转 + 减速（右转优先，最大90度）
+    for angle in [15, 30, 45, 60, 75, 90]:
+        for du in [-0.5, -1.0, -1.5, -2.0]:
+            strategies.append(AvoidanceStrategy(np.deg2rad(angle), du))
+
+    # 小幅左转 + 减速（仅在右转不可行时）
+    for angle in [-15, -30, -45]:
+        for du in [-1.0, -1.5, -2.0]:
+            strategies.append(AvoidanceStrategy(np.deg2rad(angle), du))
 
     # 加速策略（追越场景）
     for du in [0.5, 1.0, 1.5]:
         strategies.append(AvoidanceStrategy(0.0, du))
+
+    # 小幅右转 + 加速
+    for angle in [15, 30]:
+        for du in [0.5, 1.0]:
+            strategies.append(AvoidanceStrategy(np.deg2rad(angle), du))
 
     # 保持原状
     strategies.append(AvoidanceStrategy(0.0, 0.0))
@@ -335,7 +351,7 @@ def generate_speed_only_strategies():
 
 def generate_emergency_speed_strategies():
     """
-    生成紧急航速策略（大幅减速）
+    生成紧急航速策略（大幅减速 + 可配合大幅右转）
 
     Returns:
         list[AvoidanceStrategy]: 紧急航速策略列表
@@ -346,6 +362,11 @@ def generate_emergency_speed_strategies():
     for du in [-3.5, -4.0, -4.5, -5.0]:
         strategies.append(AvoidanceStrategy(0.0, du))
 
+    # 大幅右转 + 大幅减速（最大90度）
+    for angle in [60, 75, 90]:
+        for du in [-2.5, -3.0, -3.5]:
+            strategies.append(AvoidanceStrategy(np.deg2rad(angle), du))
+
     return strategies
 
 
@@ -354,40 +375,41 @@ def generate_combined_strategies():
     生成组合避让策略空间
 
     同时改变航向和航速
-    - 右转优先
+    - 右转优先（COLREGs）
+    - 最大转向角90度
     - 改向+减速组合
-    - 改向+加速组合（追越）
 
     Returns:
         list[AvoidanceStrategy]: 组合策略列表
     """
     strategies = []
 
-    # 纯改向策略（优先）
-    # 右转（COLREGs 首选）
+    # === 第一优先级：纯改向策略（右转优先，最大90度）===
+    # 右转（COLREGs 首选）: 5° 到 90°
     for angle in range(5, 95, 5):
         strategies.append(AvoidanceStrategy(np.deg2rad(angle), 0.0))
 
-    # 左转（备选）
+    # 左转（备选）: -5° 到 -60°
     for angle in range(-5, -65, -5):
         strategies.append(AvoidanceStrategy(np.deg2rad(angle), 0.0))
 
-    # 改向+减速组合（右转优先）
+    # === 第二优先级：改向+减速组合（右转优先）===
+    # 右转 + 减速（最大90度）
     for angle in [15, 30, 45, 60, 75, 90]:
         for du in [-0.5, -1.0, -1.5]:
             strategies.append(AvoidanceStrategy(np.deg2rad(angle), du))
 
-    # 改向+减速组合（左转）
+    # 左转 + 减速（仅在右转不可行时）
     for angle in [-15, -30, -45, -60]:
         for du in [-0.5, -1.0]:
             strategies.append(AvoidanceStrategy(np.deg2rad(angle), du))
 
-    # 改向+加速组合（追越场景）
+    # === 第三优先级：改向+加速组合（追越场景）===
     for angle in [15, 30, -15, -30]:
         for du in [0.5, 1.0]:
             strategies.append(AvoidanceStrategy(np.deg2rad(angle), du))
 
-    # 纯减速策略
+    # === 第四优先级：纯减速策略 ===
     for du in [-0.5, -1.0, -1.5, -2.0]:
         strategies.append(AvoidanceStrategy(0.0, du))
 
