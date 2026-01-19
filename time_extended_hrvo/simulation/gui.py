@@ -882,6 +882,32 @@ class ControlPanel(ttk.Frame):
             command=self._on_heading_recovery_change
         ).pack(anchor=tk.W, padx=5)
 
+        # 避让模式选择
+        mode_frame = ttk.LabelFrame(self, text="Avoidance Mode")
+        mode_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        self.avoidance_mode_var = tk.StringVar(value="heading_only")
+        modes = [
+            ("Heading Only", "heading_only", "Only alter course, no speed change"),
+            ("Speed Only", "speed_only", "Only alter speed, no course change"),
+            ("Combined", "combined", "Alter both course and speed"),
+        ]
+
+        for text, value, tooltip in modes:
+            rb = ttk.Radiobutton(
+                mode_frame, text=text, value=value,
+                variable=self.avoidance_mode_var,
+                command=self._on_avoidance_mode_change
+            )
+            rb.pack(anchor=tk.W, padx=5)
+
+        # 模式说明
+        self.mode_desc_label = ttk.Label(
+            mode_frame, text="Course changes only (COLREGs preferred)",
+            font=('Arial', 8), foreground='#606060'
+        )
+        self.mode_desc_label.pack(anchor=tk.W, padx=5, pady=(0, 3))
+
         # 参数设置
         param_frame = ttk.LabelFrame(self, text="Parameters")
         param_frame.pack(fill=tk.X, padx=5, pady=5)
@@ -964,6 +990,20 @@ class ControlPanel(ttk.Frame):
         """航向恢复开关"""
         if self.engine:
             self.engine.heading_recovery_enabled = self.heading_recovery_var.get()
+
+    def _on_avoidance_mode_change(self):
+        """避让模式切换回调"""
+        mode = self.avoidance_mode_var.get()
+        if self.engine:
+            self.engine.set_avoidance_mode(mode)
+
+        # 更新模式说明
+        descriptions = {
+            'heading_only': 'Course changes only (COLREGs preferred)',
+            'speed_only': 'Speed changes only (no course alteration)',
+            'combined': 'Both course and speed changes allowed'
+        }
+        self.mode_desc_label.config(text=descriptions.get(mode, ''))
 
     def _on_planner_change(self):
         """规划器切换回调"""
@@ -1132,8 +1172,11 @@ class HRVOSimulatorApp:
         self.root = tk.Tk()
         self.root.title(
             "Time-Extended HRVO Ship Collision Avoidance Simulator")
-        self.root.geometry("1400x800")
-        self.root.minsize(1200, 700)
+        self.root.geometry("1600x900")
+        self.root.minsize(1400, 800)
+
+        # 设置样式
+        self._setup_styles()
 
         # 创建仿真引擎
         self.engine = SimulationEngine(use_time_extended=True)
@@ -1151,72 +1194,112 @@ class HRVOSimulatorApp:
         # 启动更新循环
         self._update_loop()
 
-    def _create_ui(self):
-        """创建用户界面"""
-        # 主布局
-        main_frame = ttk.Frame(self.root)
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+    def _setup_styles(self):
+        """设置界面样式"""
+        style = ttk.Style()
+        style.configure('Title.TLabel', font=('Arial', 11, 'bold'))
+        style.configure('Header.TLabelframe.Label', font=('Arial', 10, 'bold'))
 
-        # 左侧：位置空间
-        left_frame = ttk.LabelFrame(
-            main_frame, text="Position Space (Scroll to zoom, Drag to pan)")
-        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
+    def _create_ui(self):
+        """创建用户界面（美化布局）"""
+        # 主布局 - 使用PanedWindow实现可调整大小
+        main_pane = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
+        main_pane.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # 左侧面板 - 包含位置空间和速度空间
+        left_pane = ttk.PanedWindow(main_pane, orient=tk.VERTICAL)
+        main_pane.add(left_pane, weight=3)
+
+        # 上方：位置空间（更大）
+        pos_frame = ttk.LabelFrame(
+            left_pane, text="  Position Space (Scroll to zoom, Drag to pan)  ")
+        left_pane.add(pos_frame, weight=3)
 
         self.pos_canvas = PositionSpaceCanvas(
-            left_frame, width=700, height=600)
-        self.pos_canvas.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+            pos_frame, width=800, height=500)
+        self.pos_canvas.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
 
-        # 中间：速度空间和图表
-        middle_frame = ttk.Frame(main_frame)
-        middle_frame.pack(side=tk.LEFT, fill=tk.BOTH, padx=5)
+        # 下方：速度空间和图表并排
+        bottom_frame = ttk.Frame(left_pane)
+        left_pane.add(bottom_frame, weight=2)
 
         # 速度空间
         vel_frame = ttk.LabelFrame(
-            middle_frame, text="Velocity Space / HRVO (Scroll to zoom)")
-        vel_frame.pack(fill=tk.BOTH, expand=True)
+            bottom_frame, text="  Velocity Space / HRVO  ")
+        vel_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
 
-        self.vel_canvas = VelocitySpaceCanvas(vel_frame, width=380, height=380)
-        self.vel_canvas.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.vel_canvas = VelocitySpaceCanvas(vel_frame, width=420, height=350)
+        self.vel_canvas.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
 
-        # 图例
+        # 速度空间图例
         legend_frame = ttk.Frame(vel_frame)
-        legend_frame.pack(fill=tk.X, padx=5, pady=2)
+        legend_frame.pack(fill=tk.X, padx=8, pady=(0, 5))
 
-        ttk.Label(legend_frame, text="*", foreground='#FF6666',
-                  font=('Arial', 14)).pack(side=tk.LEFT)
-        ttk.Label(legend_frame, text="HRVO", font=(
-            'Arial', 9)).pack(side=tk.LEFT, padx=(0, 15))
-        ttk.Label(legend_frame, text="*", foreground='#0066CC',
-                  font=('Arial', 14)).pack(side=tk.LEFT)
-        ttk.Label(legend_frame, text="Current", font=(
-            'Arial', 9)).pack(side=tk.LEFT, padx=(0, 15))
-        ttk.Label(legend_frame, text="*", foreground='#00AA00',
-                  font=('Arial', 14)).pack(side=tk.LEFT)
-        ttk.Label(legend_frame, text="Target",
-                  font=('Arial', 9)).pack(side=tk.LEFT)
+        legend_items = [
+            ('*', '#FF6666', 'HRVO'),
+            ('*', '#0066CC', 'Current V'),
+            ('*', '#00AA00', 'Target V'),
+        ]
+        for symbol, color, text in legend_items:
+            ttk.Label(legend_frame, text=symbol, foreground=color,
+                      font=('Arial', 14)).pack(side=tk.LEFT)
+            ttk.Label(legend_frame, text=text, font=('Arial', 9)).pack(
+                side=tk.LEFT, padx=(0, 12))
 
         # 相对运动图表
         chart_frame = ttk.LabelFrame(
-            middle_frame, text="Relative Motion Chart")
-        chart_frame.pack(fill=tk.X, pady=5)
+            bottom_frame, text="  Distance / DCPA Chart  ")
+        chart_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 0))
 
         self.rel_chart = RelativeMotionChart(
-            chart_frame, width=380, height=180)
-        self.rel_chart.pack(fill=tk.X, padx=5, pady=5)
+            chart_frame, width=420, height=350)
+        self.rel_chart.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
 
-        # 右侧：控制和信息
-        right_frame = ttk.Frame(main_frame)
-        right_frame.pack(side=tk.LEFT, fill=tk.Y, padx=5)
+        # 右侧面板 - 控制和信息
+        right_frame = ttk.Frame(main_pane)
+        main_pane.add(right_frame, weight=1)
+
+        # 标题
+        title_label = ttk.Label(
+            right_frame, text="Control Panel",
+            style='Title.TLabel')
+        title_label.pack(pady=(5, 10))
+
+        # 使用滚动区域容纳控制面板
+        canvas = tk.Canvas(right_frame, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(
+            right_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
 
         # 控制面板
-        self.control_panel = ControlPanel(right_frame)
-        self.control_panel.pack(fill=tk.X)
+        self.control_panel = ControlPanel(scrollable_frame)
+        self.control_panel.pack(fill=tk.X, padx=5)
         self.control_panel.set_engine(self.engine)
         self.control_panel.on_scenario_change = self._load_scenario
 
+        # 分隔线
+        ttk.Separator(scrollable_frame, orient=tk.HORIZONTAL).pack(
+            fill=tk.X, padx=5, pady=10)
+
         # 信息面板
-        self.info_panel = InfoPanel(right_frame)
-        self.info_panel.pack(fill=tk.BOTH, expand=True, pady=10)
+        self.info_panel = InfoPanel(scrollable_frame)
+        self.info_panel.pack(fill=tk.BOTH, expand=True, padx=5)
+
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # 绑定鼠标滚轮到滚动区域
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
     def _load_scenario(self, scenario_name: str):
         """加载场景"""

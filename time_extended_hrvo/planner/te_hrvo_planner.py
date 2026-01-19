@@ -41,10 +41,11 @@ class TimeExtendedHRVOPlanner:
         tau (float): 机动响应时间常数 (s)
         use_marine_cost (bool): 是否使用船舶专用代价函数
         starboard_first (bool): 是否强制右转优先
+        avoidance_mode (str): 避让模式 ('heading_only', 'speed_only', 'combined')
     """
 
     def __init__(self, T_p=30.0, dt=0.5, tau=10.0, use_marine_cost=True,
-                 starboard_first=True):
+                 starboard_first=True, avoidance_mode='heading_only'):
         """
         初始化规划器
 
@@ -54,12 +55,17 @@ class TimeExtendedHRVOPlanner:
             tau: 机动响应时间常数 (s), 默认 10s
             use_marine_cost: 是否使用船舶专用代价函数（优先改向）
             starboard_first: 是否强制右转优先（除非紧急情况）
+            avoidance_mode: 避让模式
+                - 'heading_only': 仅航向避让（只改向）
+                - 'speed_only': 仅航速避让（只改速）
+                - 'combined': 组合避让（改向+改速）
         """
         self.T_p = T_p
         self.dt = dt
         self.tau = tau
         self.use_marine_cost = use_marine_cost
         self.starboard_first = starboard_first
+        self.avoidance_mode = avoidance_mode
 
     def plan(self, own_state, obstacles, v_pref=None,
              encounter_type=None, weights=None):
@@ -160,24 +166,21 @@ class TimeExtendedHRVOPlanner:
         """
         生成策略空间（分层策略）
 
-        策略分层原则：
-        - 通常情况：只使用纯改向策略（不含速度改变）
-        - 紧急情况：才引入速度改变策略
-
-        策略顺序：
-        1. 右转策略（优先）
-        2. 保持原状
-        3. 左转策略（仅备用）
-        4. 减速策略（仅紧急情况）
+        根据避让模式生成不同的策略空间：
+        - heading_only: 仅航向避让（只改向）
+        - speed_only: 仅航速避让（只改速）
+        - combined: 组合避让（改向+改速）
 
         Args:
             encounter_type: 会遇类型
             is_emergency: 是否为紧急情况
         """
         if self.use_marine_cost:
-            # 使用船舶专用策略空间
-            # 通常情况只用纯改向，紧急情况才加入速度改变策略
-            return generate_marine_strategy_space(include_speed_change=is_emergency)
+            # 使用船舶专用策略空间，根据避让模式生成
+            return generate_marine_strategy_space(
+                include_speed_change=is_emergency,
+                mode=self.avoidance_mode
+            )
         else:
             # 传统策略空间
             return generate_strategy_space(

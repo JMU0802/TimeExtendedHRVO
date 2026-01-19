@@ -305,10 +305,26 @@ class SimulationEngine:
     def set_planner_type(self, use_time_extended: bool):
         """切换规划器类型"""
         self.use_time_extended = use_time_extended
+        avoidance_mode = getattr(self, 'avoidance_mode', 'heading_only')
         if use_time_extended:
-            self.planner = TimeExtendedHRVOPlanner(T_p=self.T_p, tau=self.tau)
+            self.planner = TimeExtendedHRVOPlanner(
+                T_p=self.T_p, tau=self.tau, avoidance_mode=avoidance_mode)
         else:
             self.planner = TraditionalHRVOPlanner()
+
+    def set_avoidance_mode(self, mode: str):
+        """
+        设置避让模式
+
+        Args:
+            mode: 避让模式
+                - 'heading_only': 仅航向避让（只改向）
+                - 'speed_only': 仅航速避让（只改速）
+                - 'combined': 组合避让（改向+改速）
+        """
+        self.avoidance_mode = mode
+        if self.use_time_extended and hasattr(self.planner, 'avoidance_mode'):
+            self.planner.avoidance_mode = mode
 
     def get_encounter_info(self) -> dict:
         """获取会遇信息"""
