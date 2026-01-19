@@ -230,6 +230,12 @@ class SimulationEngine:
             # 应用策略
             if self.current_strategy:
                 own.current_strategy = self.current_strategy
+            else:
+                # 规划器未能返回策略时的默认行为：小幅右转
+                # 这是一个安全的默认策略，符合COLREGs
+                default_strategy = AvoidanceStrategy(np.deg2rad(30), 0.0)
+                own.current_strategy = default_strategy
+                self.current_strategy = default_strategy
 
         elif self.heading_recovery_enabled and self._should_recover_heading(own):
             # 无碰撞风险，恢复原航向
