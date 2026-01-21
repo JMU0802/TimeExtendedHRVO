@@ -113,9 +113,15 @@ class SimulationEngine:
         self._initial_states: List[VesselState] = []
 
         # 航向恢复参数
-        self.safe_dcpa_threshold: float = 300.0  # 安全DCPA阈值(m)
+        self.safe_dcpa_threshold: float = 500.0  # 安全DCPA阈值(m)，提高以更早触发避让
         self.safe_tcpa_threshold: float = -10.0  # TCPA<0表示已过CPA
         self.heading_recovery_enabled: bool = True  # 是否启用航向恢复
+
+        # 策略稳定性参数
+        self.strategy_hold_time: float = 5.0  # 策略保持时间(s)
+        self.last_strategy_time: float = 0.0  # 上次策略更新时间
+        self.emergency_dcpa: float = 150.0  # 紧急DCPA阈值(m)
+        self.emergency_tcpa: float = 30.0  # 紧急TCPA阈值(s)
 
     def add_vessel(self, position, velocity, radius, name="Vessel",
                    color="blue", is_own_ship=False):
@@ -165,9 +171,57 @@ class SimulationEngine:
                 obs.state.p, obs.state.v
             )
             # 如果DCPA小于阈值且TCPA>0(还未到达CPA)，则存在风险
-            min_safe_dist = (own.state.r + obs.state.r) * 3  # 3倍安全半径
+            min_safe_dist = (own.state.r + obs.state.r) * 4  # 4倍安全半径
             if dcpa < max(self.safe_dcpa_threshold, min_safe_dist) and tcpa > 0:
                 return True
+        return False
+
+    def _is_emergency(self, own: SimulationVessel) -> bool:
+        """
+        检查是否处于紧急情况（需要立即更新策略）
+        """
+        obstacles = self.get_obstacles()
+        for obs in obstacles:
+            dcpa, tcpa = compute_dcpa_tcpa(
+                own.state.p, own.state.v,
+                obs.state.p, obs.state.v
+            )
+            # 紧急情况：DCPA很小且TCPA很短
+            if dcpa < self.emergency_dcpa and 0 < tcpa < self.emergency_tcpa:
+                return True
+            # 紧急情况：距离已经很近
+            dist = np.linalg.norm(own.state.p - obs.state.p)
+            min_safe = (own.state.r + obs.state.r) * 2
+            if dist < min_safe * 1.5:
+                return True
+        return False
+
+    def _should_update_strategy(self, own: SimulationVessel) -> bool:
+        """
+        判断是否需要更新策略
+
+        策略稳定性机制：
+        1. 紧急情况：立即更新
+        2. 首次避让：立即更新
+        3. 策略保持时间到：允许更新
+        """
+        # 紧急情况：立即更新
+        if self._is_emergency(own):
+            return True
+
+        # 首次进入避让状态：立即更新
+        if not own.is_avoiding:
+            return True
+
+        # 当前没有策略：需要更新
+        if own.current_strategy is None:
+            return True
+
+        # 检查策略保持时间
+        time_since_last = self.time - self.last_strategy_time
+        if time_since_last >= self.strategy_hold_time:
+            return True
+
         return False
 
     def _should_recover_heading(self, own: SimulationVessel) -> bool:
@@ -218,24 +272,31 @@ class SimulationEngine:
         has_collision_risk = self._check_collision_risk(own)
 
         if has_collision_risk:
-            # 存在碰撞风险，执行避让规划
+            # 存在碰撞风险，检查是否需要更新策略
             own.is_avoiding = True
-            if self.use_time_extended:
-                self.current_strategy = self.planner.plan(
-                    own.state, obstacle_states)
-            else:
-                self.current_strategy = self.planner.plan(
-                    own.state, obstacle_states)
 
-            # 应用策略
-            if self.current_strategy:
-                own.current_strategy = self.current_strategy
-            else:
-                # 规划器未能返回策略时的默认行为：小幅右转
-                # 这是一个安全的默认策略，符合COLREGs
-                default_strategy = AvoidanceStrategy(np.deg2rad(30), 0.0)
-                own.current_strategy = default_strategy
-                self.current_strategy = default_strategy
+            # 策略稳定性：仅在需要时更新策略
+            if self._should_update_strategy(own):
+                if self.use_time_extended:
+                    new_strategy = self.planner.plan(
+                        own.state, obstacle_states)
+                else:
+                    new_strategy = self.planner.plan(
+                        own.state, obstacle_states)
+
+                if new_strategy:
+                    self.current_strategy = new_strategy
+                    own.current_strategy = new_strategy
+                    self.last_strategy_time = self.time  # 记录策略更新时间
+                else:
+                    # 规划器未能返回策略时的默认行为
+                    if own.current_strategy is None:
+                        default_strategy = AvoidanceStrategy(
+                            np.deg2rad(45), 0.0)
+                        own.current_strategy = default_strategy
+                        self.current_strategy = default_strategy
+                        self.last_strategy_time = self.time
+            # else: 保持当前策略不变
 
         elif self.heading_recovery_enabled and self._should_recover_heading(own):
             # 无碰撞风险，恢复原航向
@@ -297,6 +358,7 @@ class SimulationEngine:
         self.collision_distance = float('inf')
         self.current_hrvos = []
         self.current_strategy = None
+        self.last_strategy_time = 0.0  # 重置策略时间
 
         for i, vessel in enumerate(self.vessels):
             if i < len(self._initial_states):
