@@ -7,6 +7,7 @@ COLREGs 右转优先原则:
     除非陷入紧迫局面，船舶应始终选择向右转向避让
 """
 import numpy as np
+import logging
 from ..core.hrvo import compute_hrvo
 from ..core.feasibility import is_strategy_feasible, compute_feasibility_margin
 from ..core.cost import (
@@ -18,7 +19,45 @@ from ..core.strategy import (
     generate_marine_strategy_space, generate_colregs_strategy_space,
     generate_pure_heading_strategies, generate_emergency_strategies
 )
-from ..utils.geometry import classify_encounter
+from ..utils.geometry import classify_encounter, compute_dcpa_tcpa
+
+# 配置日志
+logger = logging.getLogger('TE_HRVO')
+
+
+def enable_debug_logging(log_file=None):
+    """
+    启用详细日志输出
+
+    Args:
+        log_file: 日志文件路径（可选），如果不指定则输出到控制台
+    """
+    logger.setLevel(logging.DEBUG)
+
+    formatter = logging.Formatter(
+        '%(asctime)s [%(levelname)s] %(message)s',
+        datefmt='%H:%M:%S'
+    )
+
+    if log_file:
+        handler = logging.FileHandler(log_file, mode='w', encoding='utf-8')
+    else:
+        handler = logging.StreamHandler()
+
+    handler.setFormatter(formatter)
+    handler.setLevel(logging.DEBUG)
+
+    # 清除已有的handler
+    logger.handlers.clear()
+    logger.addHandler(handler)
+
+    logger.info("=== TE-HRVO 调试日志已启用 ===")
+
+
+def disable_debug_logging():
+    """禁用日志输出"""
+    logger.setLevel(logging.WARNING)
+    logger.handlers.clear()
 
 
 class TimeExtendedHRVOPlanner:
@@ -95,70 +134,125 @@ class TimeExtendedHRVOPlanner:
         is_emergency = is_emergency_situation(
             own_state, obstacles) if obstacles else False
 
+        # ============ 日志: 规划开始 ============
+        logger.debug("=" * 60)
+        logger.debug("【规划开始】")
+        logger.debug(f"  本船位置: ({own_state.p[0]:.1f}, {own_state.p[1]:.1f})")
+        logger.debug(f"  本船速度: ({own_state.v[0]:.2f}, {own_state.v[1]:.2f}), 速率={np.linalg.norm(own_state.v):.2f} m/s")
+        heading_deg = np.rad2deg(np.arctan2(own_state.v[1], own_state.v[0]))
+        logger.debug(f"  本船航向: {heading_deg:.1f}°")
+        logger.debug(f"  目标船数量: {len(obstacles)}")
+        logger.debug(f"  紧急情况: {is_emergency}")
+        logger.debug(f"  避让模式: {self.avoidance_mode}")
+
         # ============================================
         # Step 1: HRVO 构造
         # ============================================
         hrvo_list = []
-        for obs in obstacles:
+        logger.debug("-" * 40)
+        logger.debug("【Step 1: HRVO构造】")
+        
+        for i, obs in enumerate(obstacles):
             try:
                 hrvo = compute_hrvo(own_state, obs)
                 hrvo_list.append(hrvo)
+                
+                # 计算DCPA/TCPA
+                dcpa, tcpa = compute_dcpa_tcpa(
+                    own_state.p, own_state.v, obs.p, obs.v
+                )
+                dist = np.linalg.norm(obs.p - own_state.p)
+                
+                logger.debug(f"  目标船{i+1}:")
+                logger.debug(f"    位置: ({obs.p[0]:.1f}, {obs.p[1]:.1f})")
+                logger.debug(f"    距离: {dist:.1f}m, DCPA: {dcpa:.1f}m, TCPA: {tcpa:.1f}s")
+                logger.debug(f"    HRVO apex: ({hrvo.apex[0]:.2f}, {hrvo.apex[1]:.2f})")
+                
             except ValueError as e:
-                # 已碰撞情况
-                print(f"Warning: {e}")
+                logger.warning(f"  目标船{i+1}: 碰撞! {e}")
                 continue
+
+        if not hrvo_list:
+            logger.debug("  无有效HRVO，返回保持策略")
+            return AvoidanceStrategy(0, 0)
 
         # ============================================
         # Step 2: 策略空间 Θ 生成（分层策略）
-        # 通常情况只用纯改向，紧急情况才引入减速策略
         # ============================================
         strategies = self._generate_strategies(encounter_type, is_emergency)
+        
+        logger.debug("-" * 40)
+        logger.debug("【Step 2: 策略空间生成】")
+        logger.debug(f"  策略总数: {len(strategies)}")
 
         # ============================================
         # Step 3: 时间扩展可行性检测
         # ============================================
         feasible_strategies = []
-        feasible_starboard = []  # 可行的右转策略
-        feasible_port = []       # 可行的左转策略
+        feasible_starboard = []
+        feasible_port = []
+
+        logger.debug("-" * 40)
+        logger.debug("【Step 3: 时间扩展可行性检测】")
+        logger.debug(f"  规划时域 T_p = {self.T_p}s, 检测步长 dt = {self.dt}s")
 
         for strategy in strategies:
             if is_strategy_feasible(strategy, own_state.v,
                                     hrvo_list, self.T_p, self.dt):
                 feasible_strategies.append(strategy)
-                # 分类右转/左转策略
-                if strategy.delta_psi > 0.01:  # 右转
+                if strategy.delta_psi > 0.01:
                     feasible_starboard.append(strategy)
-                elif strategy.delta_psi < -0.01:  # 左转
+                elif strategy.delta_psi < -0.01:
                     feasible_port.append(strategy)
-                else:  # 保持或纯减速
-                    feasible_starboard.append(strategy)  # 归入右转组
+                else:
+                    feasible_starboard.append(strategy)
+
+        logger.debug(f"  可行策略总数: {len(feasible_strategies)}")
+        logger.debug(f"  可行右转策略: {len(feasible_starboard)}")
+        logger.debug(f"  可行左转策略: {len(feasible_port)}")
+        
+        if feasible_strategies:
+            logger.debug("  可行策略列表 (前10个):")
+            for s in feasible_strategies[:10]:
+                margin = compute_feasibility_margin(s, own_state.v, hrvo_list, self.T_p, self.dt)
+                logger.debug(f"    Δψ={np.rad2deg(s.delta_psi):+6.1f}°, Δu={s.delta_speed:+.1f}m/s, margin={margin:.2f}")
+        else:
+            logger.warning("  *** 无可行策略! 进入fallback ***")
 
         if not feasible_strategies:
-            # 无可行策略，尝试放宽约束
             return self._fallback_plan(own_state, obstacles, hrvo_list,
                                        v_pref, encounter_type, is_emergency)
 
         # ============================================
         # Step 4: 代价优化（强化右转优先）
         # ============================================
+        logger.debug("-" * 40)
+        logger.debug("【Step 4: 代价优化】")
 
-        # 如果启用右转优先且非紧急情况，优先从右转策略中选择
         if self.starboard_first and not is_emergency and feasible_starboard:
-            # 先尝试只从右转策略中选择
             best_strategy = min(
                 feasible_starboard,
                 key=lambda s: self._compute_cost(s, own_state, obstacles,
                                                  v_pref, encounter_type, weights,
                                                  is_emergency)
             )
+            logger.debug(f"  选择范围: 仅右转策略 ({len(feasible_starboard)}个)")
         else:
-            # 紧急情况或无可行右转策略：从所有可行策略中选择
             best_strategy = min(
                 feasible_strategies,
                 key=lambda s: self._compute_cost(s, own_state, obstacles,
                                                  v_pref, encounter_type, weights,
                                                  is_emergency)
             )
+            logger.debug(f"  选择范围: 所有可行策略 ({len(feasible_strategies)}个)")
+
+        best_cost = self._compute_cost(best_strategy, own_state, obstacles,
+                                       v_pref, encounter_type, weights, is_emergency)
+        
+        logger.debug(f"  最优策略: Δψ={np.rad2deg(best_strategy.delta_psi):+.1f}°, "
+                    f"Δu={best_strategy.delta_speed:+.1f}m/s")
+        logger.debug(f"  策略代价: {best_cost:.2f}")
+        logger.debug("=" * 60)
 
         return best_strategy
 
@@ -228,12 +322,16 @@ class TimeExtendedHRVOPlanner:
 
         转向约定: 正值=右转(Starboard)，负值=左转(Port)
         """
+        logger.debug("-" * 40)
+        logger.debug("【Fallback: 渐进式约束放宽】")
+        
         # ============================================
         # 阶段1：尝试缩短规划时域（渐进式放宽约束）
         # ============================================
         shorter_horizons = [self.T_p * 0.5,
                             self.T_p * 0.3, self.T_p * 0.2, 5.0]
 
+        logger.debug("  阶段1: 缩短规划时域搜索（纯改向）")
         for T_short in shorter_horizons:
             # 纯改向策略（右转优先）
             for angle in [30, 45, 60, 75, 90, 120, 150, 180]:
@@ -242,6 +340,7 @@ class TimeExtendedHRVOPlanner:
                     strategy, own_state.v, hrvo_list, T_short, self.dt
                 )
                 if margin > 0:
+                    logger.debug(f"    找到可行策略! T={T_short:.1f}s, 右转{angle}°, margin={margin:.2f}")
                     return strategy
 
             # 左转策略
@@ -251,11 +350,15 @@ class TimeExtendedHRVOPlanner:
                     strategy, own_state.v, hrvo_list, T_short, self.dt
                 )
                 if margin > 0:
+                    logger.debug(f"    找到可行策略! T={T_short:.1f}s, 左转{-angle}°, margin={margin:.2f}")
                     return strategy
+        
+        logger.debug("    阶段1未找到可行策略")
 
         # ============================================
         # 阶段2：改向+减速组合（仍然改向优先）
         # ============================================
+        logger.debug("  阶段2: 改向+减速组合搜索")
         for angle in [45, 60, 90, 120, 150]:
             for du in [-0.5, -1.0, -1.5, -2.0, -2.5]:
                 strategy = AvoidanceStrategy(np.deg2rad(angle), du)
@@ -263,6 +366,7 @@ class TimeExtendedHRVOPlanner:
                     strategy, own_state.v, hrvo_list, 10.0, self.dt
                 )
                 if margin > 0:
+                    logger.debug(f"    找到可行策略! 右转{angle}°+减速{du}m/s, margin={margin:.2f}")
                     return strategy
 
         for angle in [-45, -60, -90, -120]:
@@ -272,11 +376,15 @@ class TimeExtendedHRVOPlanner:
                     strategy, own_state.v, hrvo_list, 10.0, self.dt
                 )
                 if margin > 0:
+                    logger.debug(f"    找到可行策略! 左转{-angle}°+减速{du}m/s, margin={margin:.2f}")
                     return strategy
+        
+        logger.debug("    阶段2未找到可行策略")
 
         # ============================================
         # 阶段3：全方位搜索（最小侵入策略，改向优先）
         # ============================================
+        logger.debug("  阶段3: 全方位搜索（最小侵入策略）")
         best_heading_strategy = None
         best_heading_margin = float('-inf')
 
@@ -335,21 +443,35 @@ class TimeExtendedHRVOPlanner:
         # ============================================
         # 阶段4：选择最佳策略（改向优先）
         # ============================================
+        logger.debug("  阶段4: 选择最佳策略")
+        if best_heading_strategy:
+            logger.debug(f"    纯改向最佳: Δψ={np.rad2deg(best_heading_strategy.delta_psi):+.1f}°, margin={best_heading_margin:.2f}")
+        if best_combined_strategy:
+            logger.debug(f"    组合最佳: Δψ={np.rad2deg(best_combined_strategy.delta_psi):+.1f}°, "
+                        f"Δu={best_combined_strategy.delta_speed:+.1f}m/s, margin={best_combined_margin:.2f}")
 
         # 如果纯改向策略的margin足够好，优先返回
         if best_heading_strategy and best_heading_margin > -5.0:
+            logger.debug(f"    选择: 纯改向策略 (margin > -5.0)")
+            logger.debug("=" * 60)
             return best_heading_strategy
 
         # 否则返回组合策略
         if best_combined_strategy:
+            logger.debug(f"    选择: 组合策略")
+            logger.debug("=" * 60)
             return best_combined_strategy
 
         if best_heading_strategy:
+            logger.debug(f"    选择: 纯改向策略 (fallback)")
+            logger.debug("=" * 60)
             return best_heading_strategy
 
         # ============================================
         # 阶段5：最后保障 - 返回默认右转策略
         # ============================================
+        logger.warning("  阶段5: 所有搜索失败，返回默认90度右转!")
+        logger.debug("=" * 60)
         return AvoidanceStrategy(np.deg2rad(90), 0.0)
 
     def plan_with_details(self, own_state, obstacles, v_pref=None,
