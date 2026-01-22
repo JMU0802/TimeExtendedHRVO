@@ -138,7 +138,8 @@ class TimeExtendedHRVOPlanner:
         logger.debug("=" * 60)
         logger.debug("【规划开始】")
         logger.debug(f"  本船位置: ({own_state.p[0]:.1f}, {own_state.p[1]:.1f})")
-        logger.debug(f"  本船速度: ({own_state.v[0]:.2f}, {own_state.v[1]:.2f}), 速率={np.linalg.norm(own_state.v):.2f} m/s")
+        logger.debug(
+            f"  本船速度: ({own_state.v[0]:.2f}, {own_state.v[1]:.2f}), 速率={np.linalg.norm(own_state.v):.2f} m/s")
         heading_deg = np.rad2deg(np.arctan2(own_state.v[1], own_state.v[0]))
         logger.debug(f"  本船航向: {heading_deg:.1f}°")
         logger.debug(f"  目标船数量: {len(obstacles)}")
@@ -151,23 +152,25 @@ class TimeExtendedHRVOPlanner:
         hrvo_list = []
         logger.debug("-" * 40)
         logger.debug("【Step 1: HRVO构造】")
-        
+
         for i, obs in enumerate(obstacles):
             try:
                 hrvo = compute_hrvo(own_state, obs)
                 hrvo_list.append(hrvo)
-                
+
                 # 计算DCPA/TCPA
                 dcpa, tcpa = compute_dcpa_tcpa(
                     own_state.p, own_state.v, obs.p, obs.v
                 )
                 dist = np.linalg.norm(obs.p - own_state.p)
-                
+
                 logger.debug(f"  目标船{i+1}:")
                 logger.debug(f"    位置: ({obs.p[0]:.1f}, {obs.p[1]:.1f})")
-                logger.debug(f"    距离: {dist:.1f}m, DCPA: {dcpa:.1f}m, TCPA: {tcpa:.1f}s")
-                logger.debug(f"    HRVO apex: ({hrvo.apex[0]:.2f}, {hrvo.apex[1]:.2f})")
-                
+                logger.debug(
+                    f"    距离: {dist:.1f}m, DCPA: {dcpa:.1f}m, TCPA: {tcpa:.1f}s")
+                logger.debug(
+                    f"    HRVO apex: ({hrvo.apex[0]:.2f}, {hrvo.apex[1]:.2f})")
+
             except ValueError as e:
                 logger.warning(f"  目标船{i+1}: 碰撞! {e}")
                 continue
@@ -180,7 +183,7 @@ class TimeExtendedHRVOPlanner:
         # Step 2: 策略空间 Θ 生成（分层策略）
         # ============================================
         strategies = self._generate_strategies(encounter_type, is_emergency)
-        
+
         logger.debug("-" * 40)
         logger.debug("【Step 2: 策略空间生成】")
         logger.debug(f"  策略总数: {len(strategies)}")
@@ -210,12 +213,14 @@ class TimeExtendedHRVOPlanner:
         logger.debug(f"  可行策略总数: {len(feasible_strategies)}")
         logger.debug(f"  可行右转策略: {len(feasible_starboard)}")
         logger.debug(f"  可行左转策略: {len(feasible_port)}")
-        
+
         if feasible_strategies:
             logger.debug("  可行策略列表 (前10个):")
             for s in feasible_strategies[:10]:
-                margin = compute_feasibility_margin(s, own_state.v, hrvo_list, self.T_p, self.dt)
-                logger.debug(f"    Δψ={np.rad2deg(s.delta_psi):+6.1f}°, Δu={s.delta_speed:+.1f}m/s, margin={margin:.2f}")
+                margin = compute_feasibility_margin(
+                    s, own_state.v, hrvo_list, self.T_p, self.dt)
+                logger.debug(
+                    f"    Δψ={np.rad2deg(s.delta_psi):+6.1f}°, Δu={s.delta_speed:+.1f}m/s, margin={margin:.2f}")
         else:
             logger.warning("  *** 无可行策略! 进入fallback ***")
 
@@ -248,9 +253,9 @@ class TimeExtendedHRVOPlanner:
 
         best_cost = self._compute_cost(best_strategy, own_state, obstacles,
                                        v_pref, encounter_type, weights, is_emergency)
-        
+
         logger.debug(f"  最优策略: Δψ={np.rad2deg(best_strategy.delta_psi):+.1f}°, "
-                    f"Δu={best_strategy.delta_speed:+.1f}m/s")
+                     f"Δu={best_strategy.delta_speed:+.1f}m/s")
         logger.debug(f"  策略代价: {best_cost:.2f}")
         logger.debug("=" * 60)
 
@@ -324,7 +329,7 @@ class TimeExtendedHRVOPlanner:
         """
         logger.debug("-" * 40)
         logger.debug("【Fallback: 渐进式约束放宽】")
-        
+
         # ============================================
         # 阶段1：尝试缩短规划时域（渐进式放宽约束）
         # ============================================
@@ -340,7 +345,8 @@ class TimeExtendedHRVOPlanner:
                     strategy, own_state.v, hrvo_list, T_short, self.dt
                 )
                 if margin > 0:
-                    logger.debug(f"    找到可行策略! T={T_short:.1f}s, 右转{angle}°, margin={margin:.2f}")
+                    logger.debug(
+                        f"    找到可行策略! T={T_short:.1f}s, 右转{angle}°, margin={margin:.2f}")
                     return strategy
 
             # 左转策略
@@ -350,9 +356,10 @@ class TimeExtendedHRVOPlanner:
                     strategy, own_state.v, hrvo_list, T_short, self.dt
                 )
                 if margin > 0:
-                    logger.debug(f"    找到可行策略! T={T_short:.1f}s, 左转{-angle}°, margin={margin:.2f}")
+                    logger.debug(
+                        f"    找到可行策略! T={T_short:.1f}s, 左转{-angle}°, margin={margin:.2f}")
                     return strategy
-        
+
         logger.debug("    阶段1未找到可行策略")
 
         # ============================================
@@ -366,7 +373,8 @@ class TimeExtendedHRVOPlanner:
                     strategy, own_state.v, hrvo_list, 10.0, self.dt
                 )
                 if margin > 0:
-                    logger.debug(f"    找到可行策略! 右转{angle}°+减速{du}m/s, margin={margin:.2f}")
+                    logger.debug(
+                        f"    找到可行策略! 右转{angle}°+减速{du}m/s, margin={margin:.2f}")
                     return strategy
 
         for angle in [-45, -60, -90, -120]:
@@ -376,9 +384,10 @@ class TimeExtendedHRVOPlanner:
                     strategy, own_state.v, hrvo_list, 10.0, self.dt
                 )
                 if margin > 0:
-                    logger.debug(f"    找到可行策略! 左转{-angle}°+减速{du}m/s, margin={margin:.2f}")
+                    logger.debug(
+                        f"    找到可行策略! 左转{-angle}°+减速{du}m/s, margin={margin:.2f}")
                     return strategy
-        
+
         logger.debug("    阶段2未找到可行策略")
 
         # ============================================
@@ -445,10 +454,11 @@ class TimeExtendedHRVOPlanner:
         # ============================================
         logger.debug("  阶段4: 选择最佳策略")
         if best_heading_strategy:
-            logger.debug(f"    纯改向最佳: Δψ={np.rad2deg(best_heading_strategy.delta_psi):+.1f}°, margin={best_heading_margin:.2f}")
+            logger.debug(
+                f"    纯改向最佳: Δψ={np.rad2deg(best_heading_strategy.delta_psi):+.1f}°, margin={best_heading_margin:.2f}")
         if best_combined_strategy:
             logger.debug(f"    组合最佳: Δψ={np.rad2deg(best_combined_strategy.delta_psi):+.1f}°, "
-                        f"Δu={best_combined_strategy.delta_speed:+.1f}m/s, margin={best_combined_margin:.2f}")
+                         f"Δu={best_combined_strategy.delta_speed:+.1f}m/s, margin={best_combined_margin:.2f}")
 
         # 如果纯改向策略的margin足够好，优先返回
         if best_heading_strategy and best_heading_margin > -5.0:

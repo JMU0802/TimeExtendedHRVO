@@ -197,6 +197,7 @@ def generate_pure_heading_strategies():
     船舶避碰原则：通常情况下只采用单独改向的方式避让
     - 不包含任何速度改变
     - 符合COLREGs右转优先原则
+    - 支持大幅改向以应对多船场景
 
     转向约定: 正值=右转(Starboard)，负值=左转(Port)
 
@@ -205,12 +206,13 @@ def generate_pure_heading_strategies():
     """
     strategies = []
 
-    # 右转（COLREGs 首选）: +5° 到 +90°（正值）
-    for angle in range(5, 95, 5):
+    # 右转（COLREGs 首选）: +5° 到 +180°（正值）
+    # 扩展到180度以应对多船场景
+    for angle in range(5, 185, 5):
         strategies.append(AvoidanceStrategy(np.deg2rad(angle), 0.0))
 
-    # 左转: -5° 到 -60°（负值，仅在右转不可行时）
-    for angle in range(-5, -65, -5):
+    # 左转: -5° 到 -180°（负值，仅在右转不可行时）
+    for angle in range(-5, -185, -5):
         strategies.append(AvoidanceStrategy(np.deg2rad(angle), 0.0))
 
     # 保持原状（如果安全）
@@ -310,8 +312,8 @@ def generate_speed_priority_strategies():
     """
     生成航速优先避让策略空间
 
-    以改变速度为主，可配合小幅度右转
-    - 右转优先（最大90度）
+    以改变速度为主，可配合改向
+    - 右转优先（最大180度）
     - 减速策略（主要）
     - 加速策略（追越时可用）
 
@@ -324,13 +326,13 @@ def generate_speed_priority_strategies():
     for du in [-0.5, -1.0, -1.5, -2.0, -2.5, -3.0]:
         strategies.append(AvoidanceStrategy(0.0, du))
 
-    # 小幅右转 + 减速（右转优先，最大90度）
-    for angle in [15, 30, 45, 60, 75, 90]:
+    # 右转 + 减速（右转优先）
+    for angle in [15, 30, 45, 60, 75, 90, 120, 150, 180]:
         for du in [-0.5, -1.0, -1.5, -2.0]:
             strategies.append(AvoidanceStrategy(np.deg2rad(angle), du))
 
-    # 小幅左转 + 减速（仅在右转不可行时）
-    for angle in [-15, -30, -45]:
+    # 左转 + 减速（仅在右转不可行时）
+    for angle in [-15, -30, -45, -60, -90, -120]:
         for du in [-1.0, -1.5, -2.0]:
             strategies.append(AvoidanceStrategy(np.deg2rad(angle), du))
 
@@ -376,7 +378,7 @@ def generate_combined_strategies():
 
     同时改变航向和航速
     - 右转优先（COLREGs）
-    - 最大转向角90度
+    - 最大转向角180度（支持多船场景）
     - 改向+减速组合
 
     Returns:
@@ -384,23 +386,23 @@ def generate_combined_strategies():
     """
     strategies = []
 
-    # === 第一优先级：纯改向策略（右转优先，最大90度）===
-    # 右转（COLREGs 首选）: 5° 到 90°
-    for angle in range(5, 95, 5):
+    # === 第一优先级：纯改向策略（右转优先）===
+    # 右转（COLREGs 首选）: 5° 到 180°
+    for angle in range(5, 185, 5):
         strategies.append(AvoidanceStrategy(np.deg2rad(angle), 0.0))
 
-    # 左转（备选）: -5° 到 -60°
-    for angle in range(-5, -65, -5):
+    # 左转（备选）: -5° 到 -180°
+    for angle in range(-5, -185, -5):
         strategies.append(AvoidanceStrategy(np.deg2rad(angle), 0.0))
 
     # === 第二优先级：改向+减速组合（右转优先）===
-    # 右转 + 减速（最大90度）
-    for angle in [15, 30, 45, 60, 75, 90]:
+    # 右转 + 减速
+    for angle in [15, 30, 45, 60, 75, 90, 120, 150, 180]:
         for du in [-0.5, -1.0, -1.5]:
             strategies.append(AvoidanceStrategy(np.deg2rad(angle), du))
 
     # 左转 + 减速（仅在右转不可行时）
-    for angle in [-15, -30, -45, -60]:
+    for angle in [-15, -30, -45, -60, -90, -120]:
         for du in [-0.5, -1.0]:
             strategies.append(AvoidanceStrategy(np.deg2rad(angle), du))
 
