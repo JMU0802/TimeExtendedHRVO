@@ -213,103 +213,144 @@ class TimeExtendedHRVOPlanner:
     def _fallback_plan(self, own_state, obstacles, hrvo_list, v_pref,
                        encounter_type, is_emergency=False):
         """
-        后备规划：当无可行策略时（增强版 - 确保总是返回策略）
+        后备规划：当无可行策略时（增强版 - 渐进式约束放宽）
 
-        多船场景下可能没有完全可行的解，此时选择"最小侵入"策略
+        多船场景下可能没有完全可行的解，采用以下策略：
+        1. 尝试缩短规划时域（渐进式放宽）
+        2. 选择"最小侵入"策略（改向优先）
+        3. 确保总是返回一个策略
 
-        优先级：
-        1. 大幅右转（纯改向）
-        2. 右转 + 减速
-        3. 左转（紧急情况）
-        4. 全方位搜索（最小侵入）
-        5. 保持当前速度（最后手段）
+        优先级（始终遵循改向优先原则）：
+        1. 大幅右转（纯改向）- 最优先
+        2. 左转（纯改向）
+        3. 右转 + 减速
+        4. 全方位搜索（最小侵入，改向优先）
 
         转向约定: 正值=右转(Starboard)，负值=左转(Port)
         """
-        # 第一优先级：尝试更大角度的纯右转
-        starboard_strategies = []
-        for angle in [60, 70, 80, 90, 100, 110, 120, 135, 150, 170, 180]:
-            starboard_strategies.append(
-                AvoidanceStrategy(np.deg2rad(angle), 0.0)
-            )
+        # ============================================
+        # 阶段1：尝试缩短规划时域（渐进式放宽约束）
+        # ============================================
+        shorter_horizons = [self.T_p * 0.5,
+                            self.T_p * 0.3, self.T_p * 0.2, 5.0]
 
-        for strategy in starboard_strategies:
-            margin = compute_feasibility_margin(
-                strategy, own_state.v, hrvo_list, self.T_p, self.dt
-            )
-            if margin > 0:  # 可行
-                return strategy
+        for T_short in shorter_horizons:
+            # 纯改向策略（右转优先）
+            for angle in [30, 45, 60, 75, 90, 120, 150, 180]:
+                strategy = AvoidanceStrategy(np.deg2rad(angle), 0.0)
+                margin = compute_feasibility_margin(
+                    strategy, own_state.v, hrvo_list, T_short, self.dt
+                )
+                if margin > 0:
+                    return strategy
 
-        # 第二优先级：大幅右转 + 减速
-        starboard_with_speed = []
+            # 左转策略
+            for angle in [-30, -45, -60, -90, -120]:
+                strategy = AvoidanceStrategy(np.deg2rad(angle), 0.0)
+                margin = compute_feasibility_margin(
+                    strategy, own_state.v, hrvo_list, T_short, self.dt
+                )
+                if margin > 0:
+                    return strategy
+
+        # ============================================
+        # 阶段2：改向+减速组合（仍然改向优先）
+        # ============================================
         for angle in [45, 60, 90, 120, 150]:
+            for du in [-0.5, -1.0, -1.5, -2.0, -2.5]:
+                strategy = AvoidanceStrategy(np.deg2rad(angle), du)
+                margin = compute_feasibility_margin(
+                    strategy, own_state.v, hrvo_list, 10.0, self.dt
+                )
+                if margin > 0:
+                    return strategy
+
+        for angle in [-45, -60, -90, -120]:
             for du in [-0.5, -1.0, -1.5, -2.0]:
-                starboard_with_speed.append(
-                    AvoidanceStrategy(np.deg2rad(angle), du)
+                strategy = AvoidanceStrategy(np.deg2rad(angle), du)
+                margin = compute_feasibility_margin(
+                    strategy, own_state.v, hrvo_list, 10.0, self.dt
+                )
+                if margin > 0:
+                    return strategy
+
+        # ============================================
+        # 阶段3：全方位搜索（最小侵入策略，改向优先）
+        # ============================================
+        best_heading_strategy = None
+        best_heading_margin = float('-inf')
+
+        best_combined_strategy = None
+        best_combined_margin = float('-inf')
+
+        # 3.1 纯改向策略搜索（最高优先级）
+        for angle in range(5, 181, 5):  # 右转 5-180度
+            strategy = AvoidanceStrategy(np.deg2rad(angle), 0.0)
+            margin = compute_feasibility_margin(
+                strategy, own_state.v, hrvo_list, 5.0, self.dt  # 短时域
+            )
+            # 给右转较小角度加分
+            adjusted_margin = margin + 0.5 * (1 - angle / 180)
+            if adjusted_margin > best_heading_margin:
+                best_heading_margin = adjusted_margin
+                best_heading_strategy = strategy
+
+        for angle in range(-5, -181, -5):  # 左转 -5到-180度
+            strategy = AvoidanceStrategy(np.deg2rad(angle), 0.0)
+            margin = compute_feasibility_margin(
+                strategy, own_state.v, hrvo_list, 5.0, self.dt
+            )
+            # 左转惩罚
+            adjusted_margin = margin - 1.0
+            if adjusted_margin > best_heading_margin:
+                best_heading_margin = adjusted_margin
+                best_heading_strategy = strategy
+
+        # 3.2 组合策略搜索（次优先级）
+        for angle in range(0, 360, 15):
+            for du in [0, -0.5, -1.0, -1.5, -2.0, -2.5, -3.0]:
+                strategy = AvoidanceStrategy(np.deg2rad(angle), du)
+                margin = compute_feasibility_margin(
+                    strategy, own_state.v, hrvo_list, 5.0, self.dt
                 )
 
-        for strategy in starboard_with_speed:
-            margin = compute_feasibility_margin(
-                strategy, own_state.v, hrvo_list, self.T_p, self.dt
-            )
-            if margin > 0:
-                return strategy
+                # 评分调整：改向优先，减速惩罚
+                adjusted_margin = margin
 
-        # 第三优先级：考虑左转（紧急情况下放宽）
-        port_strategies = []
-        for angle in [-45, -60, -90, -120, -150, -180]:
-            port_strategies.append(
-                AvoidanceStrategy(np.deg2rad(angle), 0.0)
-            )
-            # 左转 + 减速
-            for du in [-0.5, -1.0, -1.5]:
-                port_strategies.append(
-                    AvoidanceStrategy(np.deg2rad(angle), du)
-                )
+                # 给右转加分（0-180度）
+                if 0 < angle <= 180:
+                    adjusted_margin += 1.0
 
-        for strategy in port_strategies:
-            margin = compute_feasibility_margin(
-                strategy, own_state.v, hrvo_list, self.T_p, self.dt
-            )
-            if margin > 0:
-                return strategy
+                # 给纯改向（不减速）加分
+                if abs(du) < 0.1:
+                    adjusted_margin += 2.0
+                else:
+                    # 减速惩罚
+                    adjusted_margin -= abs(du) * 0.5
 
-        # 第四优先级：全方位搜索（最小侵入策略）
-        # 当没有完全可行解时，选择侵入HRVO程度最小的策略
-        all_directions = []
-        for angle in range(0, 360, 15):  # 每15度一个方向
-            for du in [0, -0.5, -1.0, -1.5, -2.0, 0.5]:
-                all_directions.append(
-                    AvoidanceStrategy(np.deg2rad(angle), du)
-                )
+                if adjusted_margin > best_combined_margin:
+                    best_combined_margin = adjusted_margin
+                    best_combined_strategy = strategy
 
-        best_strategy = None
-        best_margin = float('-inf')
+        # ============================================
+        # 阶段4：选择最佳策略（改向优先）
+        # ============================================
 
-        for strategy in all_directions:
-            margin = compute_feasibility_margin(
-                strategy, own_state.v, hrvo_list, self.T_p, self.dt
-            )
-            # 给右转策略加分（0-180度为右转）
-            adjusted_margin = margin
-            angle_deg = np.rad2deg(strategy.delta_psi) % 360
-            if 0 < angle_deg <= 180:  # 右转
-                adjusted_margin += 1.0
+        # 如果纯改向策略的margin足够好，优先返回
+        if best_heading_strategy and best_heading_margin > -5.0:
+            return best_heading_strategy
 
-            # 给保持速度的策略加分
-            if abs(strategy.delta_speed) < 0.1:
-                adjusted_margin += 0.5
+        # 否则返回组合策略
+        if best_combined_strategy:
+            return best_combined_strategy
 
-            if adjusted_margin > best_margin:
-                best_margin = adjusted_margin
-                best_strategy = strategy
+        if best_heading_strategy:
+            return best_heading_strategy
 
-        # 第五优先级：如果还是没有找到策略，返回保持当前状态或小幅右转
-        if best_strategy is None:
-            # 返回小幅右转作为默认策略
-            best_strategy = AvoidanceStrategy(np.deg2rad(30), 0.0)
-
-        return best_strategy
+        # ============================================
+        # 阶段5：最后保障 - 返回默认右转策略
+        # ============================================
+        return AvoidanceStrategy(np.deg2rad(90), 0.0)
 
     def plan_with_details(self, own_state, obstacles, v_pref=None,
                           encounter_type=None, weights=None):
