@@ -5,6 +5,12 @@ te_hrvo_planner.py - Time-Extended HRVO 主规划器
 
 COLREGs 右转优先原则:
     除非陷入紧迫局面，船舶应始终选择向右转向避让
+
+核心改进（v2.0）：
+    采用速度空间搜索方法替代离散策略采样
+    1. 计算所有HRVO的并集
+    2. 在速度空间的"白色区域"（可行区域）中密集搜索
+    3. 选择代价最小且符合规则（右转优先）的解
 """
 import numpy as np
 import logging
@@ -18,6 +24,10 @@ from ..core.strategy import (
     AvoidanceStrategy, generate_strategy_space,
     generate_marine_strategy_space, generate_colregs_strategy_space,
     generate_pure_heading_strategies, generate_emergency_strategies
+)
+from ..core.velocity_space import (
+    adaptive_velocity_search, search_optimal_velocity,
+    visualize_velocity_space, is_in_hrvo_union
 )
 from ..utils.geometry import classify_encounter, compute_dcpa_tcpa
 
@@ -64,11 +74,16 @@ class TimeExtendedHRVOPlanner:
     """
     时间扩展 HRVO 规划器
 
-    核心算法流程 (Algorithm 1):
+    核心算法流程 (Algorithm 1 v2.0 - 速度空间搜索):
         1. HRVO 构造: 为每个目标船构造 HRVO
-        2. 策略空间生成: 离散化策略空间 Θ（优先右转改向）
-        3. 可行性检测: 时间扩展约束检验
-        4. 代价优化: 选择最优可行策略（右转优先）
+        2. 速度空间搜索: 在HRVO并集外的可行区域中搜索最优速度
+        3. 代价优化: 选择代价最小的可行速度（右转优先）
+        4. 后备机制: 如果搜索失败，使用渐进式约束放宽
+
+    相比原版改进:
+        - 不再使用离散策略采样
+        - 直接在连续速度空间中搜索可行区域
+        - 能够找到位于离散采样点之间的可行解
 
     COLREGs 合规:
         - 除非紧迫局面，始终选择右转避让
@@ -81,16 +96,18 @@ class TimeExtendedHRVOPlanner:
         use_marine_cost (bool): 是否使用船舶专用代价函数
         starboard_first (bool): 是否强制右转优先
         avoidance_mode (str): 避让模式 ('heading_only', 'speed_only', 'combined')
+        use_velocity_space_search (bool): 是否使用速度空间搜索（新方法）
     """
 
-    def __init__(self, T_p=30.0, dt=0.5, tau=10.0, use_marine_cost=True,
-                 starboard_first=True, avoidance_mode='heading_only'):
+    def __init__(self, T_p=30.0, dt=2.0, tau=10.0, use_marine_cost=True,
+                 starboard_first=True, avoidance_mode='heading_only',
+                 use_velocity_space_search=False):
         """
         初始化规划器
 
         Args:
             T_p: 规划时域 (s), 默认 30s
-            dt: 可行性检测时间步长 (s), 默认 0.5s
+            dt: 可行性检测时间步长 (s), 默认 2.0s（优化性能）
             tau: 机动响应时间常数 (s), 默认 10s
             use_marine_cost: 是否使用船舶专用代价函数（优先改向）
             starboard_first: 是否强制右转优先（除非紧急情况）
@@ -98,6 +115,9 @@ class TimeExtendedHRVOPlanner:
                 - 'heading_only': 仅航向避让（只改向）
                 - 'speed_only': 仅航速避让（只改速）
                 - 'combined': 组合避让（改向+改速）
+            use_velocity_space_search: 是否使用速度空间搜索
+                - False（默认）: 使用传统策略空间搜索（快速）
+                - True: 使用速度空间搜索（更全面但较慢）
         """
         self.T_p = T_p
         self.dt = dt
@@ -105,13 +125,14 @@ class TimeExtendedHRVOPlanner:
         self.use_marine_cost = use_marine_cost
         self.starboard_first = starboard_first
         self.avoidance_mode = avoidance_mode
+        self.use_velocity_space_search = use_velocity_space_search
 
     def plan(self, own_state, obstacles, v_pref=None,
              encounter_type=None, weights=None):
         """
-        执行 Time-Extended HRVO 规划（强化右转优先）
+        执行 Time-Extended HRVO 规划（速度空间搜索版本）
 
-        对应论文 Algorithm 1
+        对应论文 Algorithm 1 v2.0
 
         Args:
             own_state: 本船状态 (VesselState)
@@ -145,6 +166,7 @@ class TimeExtendedHRVOPlanner:
         logger.debug(f"  目标船数量: {len(obstacles)}")
         logger.debug(f"  紧急情况: {is_emergency}")
         logger.debug(f"  避让模式: {self.avoidance_mode}")
+        logger.debug(f"  使用速度空间搜索: {self.use_velocity_space_search}")
 
         # ============================================
         # Step 1: HRVO 构造
@@ -180,24 +202,75 @@ class TimeExtendedHRVOPlanner:
             return AvoidanceStrategy(0, 0)
 
         # ============================================
-        # Step 2: 策略空间 Θ 生成（分层策略）
+        # Step 2 & 3: 速度空间搜索 或 传统策略空间搜索
         # ============================================
-        strategies = self._generate_strategies(encounter_type, is_emergency)
+        if self.use_velocity_space_search:
+            # 使用新的速度空间搜索方法
+            return self._plan_with_velocity_space_search(
+                own_state, obstacles, hrvo_list, v_pref,
+                encounter_type, weights, is_emergency
+            )
+        else:
+            # 使用传统的策略空间搜索方法
+            return self._plan_with_strategy_space(
+                own_state, obstacles, hrvo_list, v_pref,
+                encounter_type, weights, is_emergency
+            )
 
+    def _plan_with_velocity_space_search(self, own_state, obstacles, hrvo_list,
+                                         v_pref, encounter_type, weights, is_emergency):
+        """
+        使用速度空间搜索的规划方法
+
+        核心改进：直接在速度空间中搜索可行区域，而不是离散策略采样
+        """
         logger.debug("-" * 40)
-        logger.debug("【Step 2: 策略空间生成】")
+        logger.debug("【Step 2: 速度空间搜索】")
+
+        # 使用自适应速度空间搜索
+        best_strategy = adaptive_velocity_search(
+            own_state.v, hrvo_list, self.T_p, self.dt, self.tau,
+            v_pref, is_emergency
+        )
+
+        if best_strategy is not None:
+            logger.debug("-" * 40)
+            logger.debug("【Step 3: 结果】")
+            logger.debug(f"  最优策略: Δψ={np.rad2deg(best_strategy.delta_psi):+.1f}°, "
+                         f"Δu={best_strategy.delta_speed:+.1f}m/s")
+            logger.debug("=" * 60)
+            return best_strategy
+
+        # 速度空间搜索失败，使用后备策略
+        logger.warning("  速度空间搜索失败，进入fallback...")
+        return self._fallback_plan(own_state, obstacles, hrvo_list,
+                                   v_pref, encounter_type, is_emergency)
+
+    def _plan_with_strategy_space(self, own_state, obstacles, hrvo_list,
+                                  v_pref, encounter_type, weights, is_emergency):
+        """
+        使用传统策略空间搜索的规划方法（备选方法）
+
+        流程：
+        1. 生成离散策略空间
+        2. 对每个策略进行时间扩展可行性检测
+        3. 在可行策略中选择代价最小的
+        """
+        logger.debug("-" * 40)
+        logger.debug("【Step 2: 策略空间生成（传统方法）】")
+
+        # 生成策略空间
+        strategies = self._generate_strategies(encounter_type, is_emergency)
         logger.debug(f"  策略总数: {len(strategies)}")
 
-        # ============================================
-        # Step 3: 时间扩展可行性检测
-        # ============================================
-        feasible_strategies = []
-        feasible_starboard = []
-        feasible_port = []
-
+        # 时间扩展可行性检测
         logger.debug("-" * 40)
         logger.debug("【Step 3: 时间扩展可行性检测】")
         logger.debug(f"  规划时域 T_p = {self.T_p}s, 检测步长 dt = {self.dt}s")
+
+        feasible_strategies = []
+        feasible_starboard = []
+        feasible_port = []
 
         for strategy in strategies:
             if is_strategy_feasible(strategy, own_state.v,
@@ -228,9 +301,7 @@ class TimeExtendedHRVOPlanner:
             return self._fallback_plan(own_state, obstacles, hrvo_list,
                                        v_pref, encounter_type, is_emergency)
 
-        # ============================================
-        # Step 4: 代价优化（强化右转优先）
-        # ============================================
+        # 代价优化
         logger.debug("-" * 40)
         logger.debug("【Step 4: 代价优化】")
 
@@ -478,9 +549,25 @@ class TimeExtendedHRVOPlanner:
             return best_heading_strategy
 
         # ============================================
-        # 阶段5：最后保障 - 返回默认右转策略
+        # 阶段5：速度空间搜索（最后尝试）
         # ============================================
-        logger.warning("  阶段5: 所有搜索失败，返回默认90度右转!")
+        logger.debug("  阶段5: 尝试速度空间搜索...")
+        try:
+            velocity_strategy = adaptive_velocity_search(
+                own_state.v, hrvo_list, self.T_p, self.dt, self.tau,
+                v_pref, True  # 紧急模式
+            )
+            if velocity_strategy is not None:
+                logger.debug(f"    速度空间搜索成功!")
+                logger.debug("=" * 60)
+                return velocity_strategy
+        except Exception as e:
+            logger.warning(f"    速度空间搜索异常: {e}")
+
+        # ============================================
+        # 阶段6：最后保障 - 返回默认右转策略
+        # ============================================
+        logger.warning("  阶段6: 所有搜索失败，返回默认90度右转!")
         logger.debug("=" * 60)
         return AvoidanceStrategy(np.deg2rad(90), 0.0)
 

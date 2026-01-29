@@ -210,7 +210,7 @@ $$
 \|\mathbf{p}_{rel}\| < 1.5 \cdot R
 $$
 
-Default thresholds: $D_{crit} = 150m$, $T_{crit} = 30s$
+Default thresholds: $D_{crit} = 1852m$ (1 nm), $T_{crit} = 30s$
 
 The DCPA (Distance at Closest Point of Approach) and TCPA (Time to CPA) are computed as:
 
@@ -447,7 +447,7 @@ time_extended_hrvo/
 | $T_p$ | 30 s | Planning horizon |
 | $dt$ | 0.5 s | Feasibility check time step |
 | $\tau$ | 10 s | Maneuvering time constant |
-| $D_{crit}$ | 150 m | Emergency DCPA threshold |
+| $D_{crit}$ | 1852 m | Emergency DCPA threshold (1 nm) |
 | $T_{crit}$ | 30 s | Emergency TCPA threshold |
 | $w_{starboard}$ | 0.2 | Starboard turn weight |
 | $w_{port}$ | 3.0 | Port turn weight |

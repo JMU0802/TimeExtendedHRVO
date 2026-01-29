@@ -89,7 +89,7 @@ class SimulationEngine:
         self.vessels: List[SimulationVessel] = []
         self.own_ship_idx: int = 0
         self.time: float = 0.0
-        self.dt: float = 0.1  # 仿真时间步长
+        self.dt: float = 1.0  # 仿真时间步长(s)
         self.tau: float = 10.0  # 机动响应时间
         self.T_p: float = 30.0  # 规划时域
 
@@ -113,15 +113,16 @@ class SimulationEngine:
         self._initial_states: List[VesselState] = []
 
         # 航向恢复参数
-        self.safe_dcpa_threshold: float = 500.0  # 安全DCPA阈值(m)，提高以更早触发避让
+        self.min_safe_passing_distance: float = 1000.0  # 最小安全会遇通过距离(m)
+        self.safe_dcpa_threshold: float = 1500.0  # 安全DCPA阈值(m)，触发避让
         self.safe_tcpa_threshold: float = -10.0  # TCPA<0表示已过CPA
         self.heading_recovery_enabled: bool = True  # 是否启用航向恢复
 
         # 策略稳定性参数
         self.strategy_hold_time: float = 5.0  # 策略保持时间(s)
         self.last_strategy_time: float = 0.0  # 上次策略更新时间
-        self.emergency_dcpa: float = 150.0  # 紧急DCPA阈值(m)
-        self.emergency_tcpa: float = 30.0  # 紧急TCPA阈值(s)
+        self.emergency_dcpa: float = 1000.0  # 紧急DCPA阈值(m)，等于最小安全距离
+        self.emergency_tcpa: float = 60.0  # 紧急TCPA阈值(s)
 
     def add_vessel(self, position, velocity, radius, name="Vessel",
                    color="blue", is_own_ship=False):
@@ -162,7 +163,7 @@ class SimulationEngine:
         检查是否存在碰撞风险
 
         Returns:
-            True 如果存在需要避让的目标船
+            True 如果存在需要避让的目标船（DCPA < 最小安全距离1000m）
         """
         obstacles = self.get_obstacles()
         for obs in obstacles:
@@ -170,15 +171,19 @@ class SimulationEngine:
                 own.state.p, own.state.v,
                 obs.state.p, obs.state.v
             )
-            # 如果DCPA小于阈值且TCPA>0(还未到达CPA)，则存在风险
-            min_safe_dist = (own.state.r + obs.state.r) * 4  # 4倍安全半径
-            if dcpa < max(self.safe_dcpa_threshold, min_safe_dist) and tcpa > 0:
+            # 如果DCPA小于安全阈值且TCPA>0(还未到达CPA)，则存在风险
+            # 使用max确保至少满足最小安全会遇距离1000m
+            safe_dist = max(self.safe_dcpa_threshold,
+                            self.min_safe_passing_distance)
+            if dcpa < safe_dist and tcpa > 0:
                 return True
         return False
 
     def _is_emergency(self, own: SimulationVessel) -> bool:
         """
         检查是否处于紧急情况（需要立即更新策略）
+
+        紧急情况：DCPA < 最小安全距离1000m 且 TCPA较短
         """
         obstacles = self.get_obstacles()
         for obs in obstacles:
@@ -186,13 +191,12 @@ class SimulationEngine:
                 own.state.p, own.state.v,
                 obs.state.p, obs.state.v
             )
-            # 紧急情况：DCPA很小且TCPA很短
-            if dcpa < self.emergency_dcpa and 0 < tcpa < self.emergency_tcpa:
+            # 紧急情况：DCPA小于最小安全距离且TCPA较短
+            if dcpa < self.min_safe_passing_distance and 0 < tcpa < self.emergency_tcpa:
                 return True
-            # 紧急情况：距离已经很近
+            # 紧急情况：距离已经很近（小于2倍最小安全距离）
             dist = np.linalg.norm(own.state.p - obs.state.p)
-            min_safe = (own.state.r + obs.state.r) * 2
-            if dist < min_safe * 1.5:
+            if dist < self.min_safe_passing_distance * 2:
                 return True
         return False
 
@@ -230,7 +234,7 @@ class SimulationEngine:
 
         条件:
         1. 正在避让状态
-        2. 所有目标船的TCPA < 0 (已过CPA) 或 DCPA > 安全阈值
+        2. 所有目标船的TCPA < 0 (已过CPA) 或 DCPA > 最小安全距离1000m
         """
         if not own.is_avoiding:
             return False
@@ -241,9 +245,11 @@ class SimulationEngine:
                 own.state.p, own.state.v,
                 obs.state.p, obs.state.v
             )
-            min_safe_dist = (own.state.r + obs.state.r) * 2
+            # 使用最小安全会遇距离作为判断标准
+            safe_dist = max(self.safe_dcpa_threshold,
+                            self.min_safe_passing_distance)
             # 如果还有目标船需要避让，不恢复
-            if tcpa > 5.0 and dcpa < max(self.safe_dcpa_threshold, min_safe_dist):
+            if tcpa > 5.0 and dcpa < safe_dist:
                 return False
         return True
 
@@ -428,30 +434,30 @@ def create_head_on_scenario(engine: SimulationEngine):
     """创建对遇场景"""
     engine.clear_vessels()
     engine.add_vessel([0, 0], [0, 5], 30, "Own Ship", "blue", is_own_ship=True)
-    engine.add_vessel([50, 800], [0, -5], 30, "Target 1", "red")
+    engine.add_vessel([50, 6000], [0, -5], 30, "Target 1", "red")
 
 
 def create_crossing_scenario(engine: SimulationEngine):
     """创建交叉相遇场景"""
     engine.clear_vessels()
     engine.add_vessel([0, 0], [5, 0], 30, "Own Ship", "blue", is_own_ship=True)
-    engine.add_vessel([400, -250], [0, 5], 30, "Target 1", "red")
+    engine.add_vessel([5000, -2000], [0, 5], 30, "Target 1", "red")
 
 
 def create_overtaking_scenario(engine: SimulationEngine):
     """创建追越场景"""
     engine.clear_vessels()
     engine.add_vessel([0, 0], [0, 8], 30, "Own Ship", "blue", is_own_ship=True)
-    engine.add_vessel([30, 300], [0, 3], 30, "Target 1", "red")
+    engine.add_vessel([30, 5000], [0, 3], 30, "Target 1", "red")
 
 
 def create_multi_vessel_scenario(engine: SimulationEngine):
     """创建多船场景（固定）"""
     engine.clear_vessels()
     engine.add_vessel([0, 0], [5, 0], 30, "Own Ship", "blue", is_own_ship=True)
-    engine.add_vessel([500, 100], [-4, 0], 25, "Target 1", "red")
-    engine.add_vessel([500, -100], [-4, 0], 25, "Target 2", "orange")
-    engine.add_vessel([600, 0], [-3, 1], 25, "Target 3", "green")
+    engine.add_vessel([5000, 1000], [-4, 0], 25, "Target 1", "red")
+    engine.add_vessel([5000, -1000], [-4, 0], 25, "Target 2", "orange")
+    engine.add_vessel([6000, 0], [-3, 1], 25, "Target 3", "green")
 
 
 def create_random_scenario(engine: SimulationEngine, num_targets: int = None):
@@ -485,8 +491,8 @@ def create_random_scenario(engine: SimulationEngine, num_targets: int = None):
     # 生成目标船
     for i in range(num_targets):
         # 在本船前方生成目标船（确保会遇）
-        # 距离：300-800m
-        distance = random.uniform(300, 800)
+        # 距离：5000-8000m（足够远以便进行避让）
+        distance = random.uniform(5000, 8000)
 
         # 相对角度：在本船航向前方 ±60度范围内
         rel_angle = random.uniform(-np.pi/3, np.pi/3)

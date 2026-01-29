@@ -169,7 +169,7 @@ def combined_cost(strategy, v_pref, encounter_type=None, goal_direction=None,
 
 
 def dcpa_tcpa_cost(own_state, obs_state, strategy, w_dcpa=1.0, w_tcpa=0.1,
-                   dcpa_safe=500.0):
+                   dcpa_safe=1852.0):
     """
     基于 DCPA/TCPA 的代价函数
 
@@ -182,7 +182,7 @@ def dcpa_tcpa_cost(own_state, obs_state, strategy, w_dcpa=1.0, w_tcpa=0.1,
         strategy: 避让策略
         w_dcpa: DCPA 权重
         w_tcpa: TCPA 权重
-        dcpa_safe: 安全 DCPA 阈值 (m)
+        dcpa_safe: 安全 DCPA 阈值 (m), 默认为 1 海里 (1852m)
 
     Returns:
         float: DCPA/TCPA 代价
@@ -354,7 +354,7 @@ def marine_combined_cost(strategy, v_pref, encounter_type=None,
     return total
 
 
-def is_emergency_situation(own_state, obstacles, dcpa_threshold=150.0, tcpa_threshold=30.0):
+def is_emergency_situation(own_state, obstacles, dcpa_threshold=1852.0, tcpa_threshold=30.0):
     """
     判断是否处于紧迫局面
 
@@ -365,7 +365,7 @@ def is_emergency_situation(own_state, obstacles, dcpa_threshold=150.0, tcpa_thre
     Args:
         own_state: 本船状态
         obstacles: 目标船状态列表
-        dcpa_threshold: DCPA紧急阈值(m)
+        dcpa_threshold: DCPA紧急阈值(m), 默认为 1 海里 (1852m)
         tcpa_threshold: TCPA紧急阈值(s)
 
     Returns:

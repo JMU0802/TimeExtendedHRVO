@@ -628,6 +628,378 @@ class VelocitySpaceCanvas(tk.Canvas):
                 )
 
 
+class OwnShipChart(tk.Canvas):
+    """
+    本船状态图表
+
+    显示本船航向、航速随时间的变化曲线
+    """
+
+    def __init__(self, parent, width=350, height=200, **kwargs):
+        super().__init__(parent, width=width, height=height, bg='white', **kwargs)
+
+        self.width = width
+        self.height = height
+
+        # 数据存储
+        self.max_points = 200
+        self.time_data = deque(maxlen=self.max_points)
+        self.heading_data = deque(maxlen=self.max_points)  # 航向（度）
+        self.speed_data = deque(maxlen=self.max_points)    # 航速（m/s）
+
+        # 绘图区域
+        self.margin_left = 50
+        self.margin_right = 15
+        self.margin_top = 25
+        self.margin_bottom = 30
+
+        self._draw_axes()
+
+    def _draw_axes(self):
+        """绘制坐标轴"""
+        self.delete('axes')
+
+        plot_width = self.width - self.margin_left - self.margin_right
+        plot_height = self.height - self.margin_top - self.margin_bottom
+
+        # 边框
+        self.create_rectangle(
+            self.margin_left, self.margin_top,
+            self.width - self.margin_right, self.height - self.margin_bottom,
+            outline='#808080', tags='axes'
+        )
+
+        # Y轴标签（双Y轴）
+        self.create_text(
+            15, self.height / 2,
+            text='Speed (m/s)', fill='#0066CC',
+            font=('Arial', 9), angle=90, tags='axes'
+        )
+
+        self.create_text(
+            self.width - 5, self.height / 2,
+            text='Heading (deg)', fill='#CC0000',
+            font=('Arial', 9), angle=270, tags='axes'
+        )
+
+        # X轴标签
+        self.create_text(
+            self.width / 2, self.height - 8,
+            text='Time (s)', fill='#404040',
+            font=('Arial', 9), tags='axes'
+        )
+
+        # 标题
+        self.create_text(
+            self.width / 2, 10,
+            text='Own Ship Status', fill='#202020',
+            font=('Arial', 10, 'bold'), tags='axes'
+        )
+
+        # 图例
+        legend_x = self.margin_left + 10
+        legend_y = self.margin_top + 10
+
+        self.create_line(legend_x, legend_y, legend_x + 20, legend_y,
+                         fill='#0066CC', width=2, tags='axes')
+        self.create_text(legend_x + 25, legend_y, text='Speed',
+                         fill='#0066CC', font=('Arial', 8),
+                         anchor=tk.W, tags='axes')
+
+        self.create_line(legend_x + 70, legend_y, legend_x + 90, legend_y,
+                         fill='#CC0000', width=2, dash=(4, 2), tags='axes')
+        self.create_text(legend_x + 95, legend_y, text='Heading',
+                         fill='#CC0000', font=('Arial', 8),
+                         anchor=tk.W, tags='axes')
+
+    def clear_data(self):
+        """清除数据"""
+        self.time_data.clear()
+        self.heading_data.clear()
+        self.speed_data.clear()
+
+    def add_data(self, time: float, heading: float, speed: float):
+        """添加数据点"""
+        self.time_data.append(time)
+        self.heading_data.append(heading)
+        self.speed_data.append(speed)
+
+    def update_chart(self):
+        """更新图表"""
+        self.delete('chart')
+
+        if len(self.time_data) < 2:
+            return
+
+        plot_width = self.width - self.margin_left - self.margin_right
+        plot_height = self.height - self.margin_top - self.margin_bottom
+
+        # 计算数据范围
+        time_min = min(self.time_data)
+        time_max = max(self.time_data)
+        time_range = max(time_max - time_min, 10)
+
+        # 速度范围
+        speed_min = min(self.speed_data) if self.speed_data else 0
+        speed_max = max(self.speed_data) if self.speed_data else 10
+        speed_range = max(speed_max - speed_min, 2)
+
+        # 航向范围（0-360度）
+        heading_min, heading_max = 0, 360
+
+        def speed_to_screen(t, speed):
+            x = self.margin_left + (t - time_min) / time_range * plot_width
+            y = self.height - self.margin_bottom - \
+                (speed - speed_min) / speed_range * plot_height
+            return x, y
+
+        def heading_to_screen(t, heading):
+            x = self.margin_left + (t - time_min) / time_range * plot_width
+            # 航向使用右侧Y轴
+            y = self.height - self.margin_bottom - \
+                (heading - heading_min) / \
+                (heading_max - heading_min) * plot_height
+            return x, y
+
+        # 绘制速度曲线（左侧Y轴）
+        if len(self.speed_data) >= 2:
+            points = []
+            for t, speed in zip(self.time_data, self.speed_data):
+                x, y = speed_to_screen(t, speed)
+                points.extend([x, y])
+            self.create_line(points, fill='#0066CC', width=2,
+                             smooth=True, tags='chart')
+
+        # 绘制航向曲线（右侧Y轴）
+        if len(self.heading_data) >= 2:
+            points = []
+            for t, heading in zip(self.time_data, self.heading_data):
+                x, y = heading_to_screen(t, heading)
+                points.extend([x, y])
+            self.create_line(points, fill='#CC0000', width=2,
+                             dash=(4, 2), smooth=True, tags='chart')
+
+        # 左侧Y轴刻度（速度）
+        for i in range(5):
+            speed_val = speed_min + (speed_range * i / 4)
+            _, y = speed_to_screen(time_min, speed_val)
+            self.create_text(self.margin_left - 5, y,
+                             text=f'{speed_val:.1f}', fill='#0066CC',
+                             font=('Arial', 8), anchor=tk.E, tags='chart')
+            self.create_line(self.margin_left - 3, y, self.margin_left, y,
+                             fill='#808080', tags='chart')
+
+        # 右侧Y轴刻度（航向）
+        for i in range(5):
+            heading_val = heading_min + ((heading_max - heading_min) * i / 4)
+            _, y = heading_to_screen(time_min, heading_val)
+            self.create_text(self.width - self.margin_right + 5, y,
+                             text=f'{heading_val:.0f}', fill='#CC0000',
+                             font=('Arial', 8), anchor=tk.W, tags='chart')
+            self.create_line(self.width - self.margin_right, y,
+                             self.width - self.margin_right + 3, y,
+                             fill='#808080', tags='chart')
+
+        # X轴刻度
+        for i in range(5):
+            t = time_min + (time_range * i / 4)
+            x, _ = speed_to_screen(t, speed_min)
+            self.create_text(x, self.height - self.margin_bottom + 12,
+                             text=f'{t:.0f}', fill='#606060',
+                             font=('Arial', 8), tags='chart')
+            self.create_line(x, self.height - self.margin_bottom,
+                             x, self.height - self.margin_bottom + 3,
+                             fill='#808080', tags='chart')
+
+        # 当前值标注
+        if self.speed_data and self.heading_data:
+            current_speed = self.speed_data[-1]
+            current_heading = self.heading_data[-1]
+
+            info_text = f'Speed: {current_speed:.1f}m/s\nHeading: {current_heading:.0f}°'
+            self.create_text(
+                self.width - self.margin_right - 5, self.margin_top + 30,
+                text=info_text, fill='#202020', font=('Arial', 9),
+                anchor=tk.NE, justify=tk.RIGHT, tags='chart'
+            )
+
+
+class DCPATCPAChart(tk.Canvas):
+    """
+    DCPA/TCPA 时间曲线图表
+
+    显示与各目标船的DCPA和TCPA随时间变化
+    """
+
+    def __init__(self, parent, width=350, height=200, **kwargs):
+        super().__init__(parent, width=width, height=height, bg='white', **kwargs)
+
+        self.width = width
+        self.height = height
+
+        # 数据存储（为每艘目标船维护独立的数据）
+        self.max_points = 200
+        self.time_data = deque(maxlen=self.max_points)
+        self.targets_data = {}  # {target_name: {'dcpa': deque, 'tcpa': deque}}
+
+        # 绘图区域
+        self.margin_left = 50
+        self.margin_right = 15
+        self.margin_top = 25
+        self.margin_bottom = 30
+
+        # 颜色映射
+        self.colors = ['#FF6666', '#66CCFF', '#66FF66', '#FFCC66', '#CC66FF']
+
+        self._draw_axes()
+
+    def _draw_axes(self):
+        """绘制坐标轴"""
+        self.delete('axes')
+
+        plot_width = self.width - self.margin_left - self.margin_right
+        plot_height = self.height - self.margin_top - self.margin_bottom
+
+        # 边框
+        self.create_rectangle(
+            self.margin_left, self.margin_top,
+            self.width - self.margin_right, self.height - self.margin_bottom,
+            outline='#808080', tags='axes'
+        )
+
+        # Y轴标签
+        self.create_text(
+            15, self.height / 2,
+            text='Distance (m)', fill='#404040',
+            font=('Arial', 9), angle=90, tags='axes'
+        )
+
+        # X轴标签
+        self.create_text(
+            self.width / 2, self.height - 8,
+            text='Time (s)', fill='#404040',
+            font=('Arial', 9), tags='axes'
+        )
+
+        # 标题
+        self.create_text(
+            self.width / 2, 10,
+            text='DCPA/TCPA Analysis', fill='#202020',
+            font=('Arial', 10, 'bold'), tags='axes'
+        )
+
+    def clear_data(self):
+        """清除数据"""
+        self.time_data.clear()
+        self.targets_data.clear()
+
+    def add_data(self, time: float, targets_info: dict):
+        """添加数据点
+        targets_info: {target_name: {'dcpa': float, 'tcpa': float}}
+        """
+        self.time_data.append(time)
+
+        for target_name, info in targets_info.items():
+            if target_name not in self.targets_data:
+                self.targets_data[target_name] = {
+                    'dcpa': deque(maxlen=self.max_points),
+                    'tcpa': deque(maxlen=self.max_points)
+                }
+            self.targets_data[target_name]['dcpa'].append(info['dcpa'])
+            self.targets_data[target_name]['tcpa'].append(info['tcpa'])
+
+    def update_chart(self):
+        """更新图表"""
+        self.delete('chart')
+
+        if len(self.time_data) < 2 or not self.targets_data:
+            return
+
+        plot_width = self.width - self.margin_left - self.margin_right
+        plot_height = self.height - self.margin_top - self.margin_bottom
+
+        # 计算数据范围
+        time_min = min(self.time_data)
+        time_max = max(self.time_data)
+        time_range = max(time_max - time_min, 10)
+
+        # 距离范围
+        all_dcpa_values = []
+        for target_data in self.targets_data.values():
+            all_dcpa_values.extend(list(target_data['dcpa']))
+
+        dist_max = max(all_dcpa_values) if all_dcpa_values else 1000
+        dist_min = 0
+        dist_range = max(dist_max - dist_min, 100)
+
+        def to_screen(t, d):
+            x = self.margin_left + (t - time_min) / time_range * plot_width
+            y = self.height - self.margin_bottom - \
+                (d - dist_min) / dist_range * plot_height
+            return x, y
+
+        # 为每个目标船绘制DCPA曲线
+        for idx, (target_name, target_data) in enumerate(self.targets_data.items()):
+            color = self.colors[idx % len(self.colors)]
+
+            # 绘制DCPA曲线
+            if len(target_data['dcpa']) >= 2:
+                points = []
+                for t, dcpa in zip(self.time_data, target_data['dcpa']):
+                    x, y = to_screen(t, dcpa)
+                    points.extend([x, y])
+                self.create_line(points, fill=color, width=2,
+                                 smooth=True, tags='chart')
+
+                # 添加图例
+                legend_y = self.margin_top + 10 + idx * 15
+                self.create_line(self.margin_left + 10, legend_y,
+                                 self.margin_left + 30, legend_y,
+                                 fill=color, width=2, tags='chart')
+                self.create_text(self.margin_left + 35, legend_y,
+                                 text=target_name, fill=color, font=(
+                                     'Arial', 8),
+                                 anchor=tk.W, tags='chart')
+
+        # Y轴刻度
+        for i in range(5):
+            d = dist_min + (dist_range * i / 4)
+            _, y = to_screen(time_min, d)
+            self.create_text(self.margin_left - 5, y,
+                             text=f'{d:.0f}', fill='#606060',
+                             font=('Arial', 8), anchor=tk.E, tags='chart')
+            self.create_line(self.margin_left - 3, y, self.margin_left, y,
+                             fill='#808080', tags='chart')
+
+        # X轴刻度
+        for i in range(5):
+            t = time_min + (time_range * i / 4)
+            x, _ = to_screen(t, dist_min)
+            self.create_text(x, self.height - self.margin_bottom + 12,
+                             text=f'{t:.0f}', fill='#606060',
+                             font=('Arial', 8), tags='chart')
+            self.create_line(x, self.height - self.margin_bottom,
+                             x, self.height - self.margin_bottom + 3,
+                             fill='#808080', tags='chart')
+
+        # 当前值标注
+        current_info = []
+        for target_name, target_data in self.targets_data.items():
+            if target_data['dcpa'] and target_data['tcpa']:
+                current_dcpa = target_data['dcpa'][-1]
+                current_tcpa = target_data['tcpa'][-1]
+                current_info.append(
+                    f'{target_name}: DCPA={current_dcpa:.0f}m, TCPA={current_tcpa:.1f}s')
+
+        if current_info:
+            info_text = '\n'.join(current_info[:3])  # 最多显示3个目标
+            self.create_text(
+                self.width - self.margin_right - 5, self.margin_top + 10,
+                text=info_text, fill='#202020', font=('Arial', 8),
+                anchor=tk.NE, justify=tk.RIGHT, tags='chart'
+            )
+
+
 class RelativeMotionChart(tk.Canvas):
     """
     相对运动图表
@@ -1219,21 +1591,21 @@ class HRVOSimulatorApp:
             pos_frame, width=800, height=500)
         self.pos_canvas.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
 
-        # 下方：速度空间和图表并排
+        # 下方：三个图表并排显示
         bottom_frame = ttk.Frame(left_pane)
         left_pane.add(bottom_frame, weight=2)
 
         # 速度空间
         vel_frame = ttk.LabelFrame(
             bottom_frame, text="  Velocity Space / HRVO  ")
-        vel_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
+        vel_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 2))
 
-        self.vel_canvas = VelocitySpaceCanvas(vel_frame, width=420, height=350)
-        self.vel_canvas.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        self.vel_canvas = VelocitySpaceCanvas(vel_frame, width=280, height=350)
+        self.vel_canvas.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
         # 速度空间图例
         legend_frame = ttk.Frame(vel_frame)
-        legend_frame.pack(fill=tk.X, padx=8, pady=(0, 5))
+        legend_frame.pack(fill=tk.X, padx=5, pady=(0, 2))
 
         legend_items = [
             ('*', '#FF6666', 'HRVO'),
@@ -1242,18 +1614,29 @@ class HRVOSimulatorApp:
         ]
         for symbol, color, text in legend_items:
             ttk.Label(legend_frame, text=symbol, foreground=color,
-                      font=('Arial', 14)).pack(side=tk.LEFT)
-            ttk.Label(legend_frame, text=text, font=('Arial', 9)).pack(
-                side=tk.LEFT, padx=(0, 12))
+                      font=('Arial', 12)).pack(side=tk.LEFT)
+            ttk.Label(legend_frame, text=text, font=('Arial', 8)).pack(
+                side=tk.LEFT, padx=(0, 8))
 
-        # 相对运动图表
-        chart_frame = ttk.LabelFrame(
-            bottom_frame, text="  Distance / DCPA Chart  ")
-        chart_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 0))
+        # 本船状态图表
+        own_chart_frame = ttk.LabelFrame(
+            bottom_frame, text="  Own Ship Status  ")
+        own_chart_frame.pack(side=tk.LEFT, fill=tk.BOTH,
+                             expand=True, padx=(2, 2))
 
-        self.rel_chart = RelativeMotionChart(
-            chart_frame, width=420, height=350)
-        self.rel_chart.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        self.own_chart = OwnShipChart(
+            own_chart_frame, width=280, height=350)
+        self.own_chart.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # DCPA/TCPA图表
+        dcpa_chart_frame = ttk.LabelFrame(
+            bottom_frame, text="  DCPA/TCPA Analysis  ")
+        dcpa_chart_frame.pack(side=tk.LEFT, fill=tk.BOTH,
+                              expand=True, padx=(2, 0))
+
+        self.dcpa_chart = DCPATCPAChart(
+            dcpa_chart_frame, width=280, height=350)
+        self.dcpa_chart.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
         # 右侧面板 - 控制和信息
         right_frame = ttk.Frame(main_pane)
@@ -1321,7 +1704,8 @@ class HRVOSimulatorApp:
             create_random_5_vessel_scenario(self.engine)
 
         self.engine.reset()
-        self.rel_chart.clear_data()
+        self.own_chart.clear_data()
+        self.dcpa_chart.clear_data()
         self._redraw()
 
     def _on_engine_update(self):
@@ -1341,32 +1725,39 @@ class HRVOSimulatorApp:
         if not own:
             return
 
-        # 获取第一个目标船
+        # 更新本船状态图表数据
+        heading_deg = np.rad2deg(own.state.heading)
+        # 转换到航海惯例：北为0度，顺时针为正
+        nav_heading = (90 - heading_deg) % 360
+        speed = np.linalg.norm(own.state.v)
+
+        self.own_chart.add_data(self.engine.time, nav_heading, speed)
+
+        # 更新DCPA/TCPA图表数据
         targets = [v for v in self.engine.vessels if not v.is_own_ship]
-        if not targets:
-            return
+        targets_info = {}
 
-        target = targets[0]
+        for target in targets:
+            # 计算距离
+            rel_pos = target.state.p - own.state.p
+            distance = np.linalg.norm(rel_pos)
 
-        # 计算距离
-        rel_pos = target.state.p - own.state.p
-        distance = np.linalg.norm(rel_pos)
+            # 计算DCPA/TCPA
+            rel_vel = target.state.v - own.state.v
+            rel_speed_sq = np.dot(rel_vel, rel_vel)
 
-        # 计算DCPA/TCPA
-        rel_vel = target.state.v - own.state.v
-        rel_speed_sq = np.dot(rel_vel, rel_vel)
+            if rel_speed_sq > 0.01:
+                tcpa = -np.dot(rel_pos, rel_vel) / rel_speed_sq
+                tcpa = max(0, tcpa)
+                cpa_pos = rel_pos + rel_vel * tcpa
+                dcpa = np.linalg.norm(cpa_pos)
+            else:
+                tcpa = 0
+                dcpa = distance
 
-        if rel_speed_sq > 0.01:
-            tcpa = -np.dot(rel_pos, rel_vel) / rel_speed_sq
-            tcpa = max(0, tcpa)
-            cpa_pos = rel_pos + rel_vel * tcpa
-            dcpa = np.linalg.norm(cpa_pos)
-        else:
-            tcpa = 0
-            dcpa = distance
+            targets_info[target.name] = {'dcpa': dcpa, 'tcpa': tcpa}
 
-        # 添加数据
-        self.rel_chart.add_data(self.engine.time, distance, dcpa, tcpa)
+        self.dcpa_chart.add_data(self.engine.time, targets_info)
 
     def _redraw(self):
         """重绘界面"""
@@ -1378,7 +1769,8 @@ class HRVOSimulatorApp:
         self.vel_canvas.draw_all(self.engine)
 
         # 更新图表
-        self.rel_chart.update_chart()
+        self.own_chart.update_chart()
+        self.dcpa_chart.update_chart()
 
         # 更新信息
         self.info_panel.update_info(self.engine)
@@ -1388,16 +1780,19 @@ class HRVOSimulatorApp:
         if self.engine.is_running and not self.engine.collision_occurred:
             # 根据仿真速度调整
             speed = self.control_panel.speed_var.get()
-            self.engine.dt = 0.1 * speed
+            self.engine.dt = 1.0 * speed  # 基础步长1秒，乘以速度倍数
 
-            self.engine.step()
+            # 每次更新执行多步仿真以加速
+            steps_per_update = max(1, int(speed))
+            for _ in range(steps_per_update):
+                self.engine.step()
 
         # 更新速度标签
         speed = self.control_panel.speed_var.get()
         self.control_panel.speed_label.config(text=f"{speed:.1f}x")
 
-        # 继续循环
-        self.root.after(50, self._update_loop)
+        # 继续循环（20ms间隔）
+        self.root.after(20, self._update_loop)
 
     def run(self):
         """运行应用"""

@@ -94,7 +94,7 @@ class HRVO:
         return f"HRVO(apex={self.apex}, left={self.left}, right={self.right})"
 
 
-def compute_hrvo(own, obs, responsibility=0.5):
+def compute_hrvo(own, obs, responsibility=0.5, min_safe_distance=1000.0):
     """
     构造 HRVO
 
@@ -104,6 +104,8 @@ def compute_hrvo(own, obs, responsibility=0.5):
         own: 本船状态 (VesselState)
         obs: 目标船状态 (VesselState)
         responsibility: 避让责任分配因子 (0-1), 默认 0.5 表示平等分担
+        min_safe_distance: 最小安全会遇距离(m)，默认1000米
+            HRVO将以此为安全半径构造，确保DCPA >= min_safe_distance
 
     Returns:
         HRVO: 构造的 HRVO 对象
@@ -117,12 +119,30 @@ def compute_hrvo(own, obs, responsibility=0.5):
 
     # 距离和组合半径
     dist = np.linalg.norm(p_rel)
-    R = own.r + obs.r
 
-    # 检查是否已碰撞
-    if dist <= R:
+    # 使用最小安全会遇距离作为HRVO的安全半径
+    # 这确保了选择的速度会使DCPA >= min_safe_distance
+    R = max(own.r + obs.r, min_safe_distance)
+
+    # 检查是否已碰撞（使用物理半径判断）
+    physical_R = own.r + obs.r
+    if dist <= physical_R:
         raise ValueError(
-            f"Collision already occurred: distance={dist:.2f}, R={R:.2f}")
+            f"Collision already occurred: distance={dist:.2f}, R={physical_R:.2f}")
+
+    # 如果距离小于安全半径，需要特殊处理
+    if dist <= R:
+        # 距离太近，无法构造有效的锥形HRVO
+        # 创建一个覆盖整个速度空间前方的HRVO
+        base_angle = np.arctan2(p_rel[1], p_rel[0])
+        # 使用接近180度的张角
+        theta = np.pi * 0.45
+        left_dir = np.array([np.cos(base_angle + theta),
+                             np.sin(base_angle + theta)])
+        right_dir = np.array([np.cos(base_angle - theta),
+                              np.sin(base_angle - theta)])
+        apex = obs.v + responsibility * v_rel
+        return HRVO(apex, left_dir, right_dir)
 
     # 计算切线角度
     # theta = arcsin(R / dist) 是从相对位置向量到切线的角度

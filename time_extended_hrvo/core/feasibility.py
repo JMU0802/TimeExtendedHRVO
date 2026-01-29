@@ -3,38 +3,47 @@ feasibility.py - 时间一致性可行性判定
 
 对应论文核心创新:
     时间扩展 HRVO 约束检测
-    ∀t ∈ [0, T_p], v_o(t; θ) ∉ HRVO_i
+    ∀t ∈ [t_start, T_p], v_o(t; θ) ∉ HRVO_i
+
+注意：当前速度可能已经在HRVO内（碰撞航线），因此检测从响应50%时刻开始，
+允许轨迹初期穿过HRVO，只要最终能够离开即可。
 """
 import numpy as np
 
 
-def is_strategy_feasible(strategy, v0, hrvo_list, T_p, dt=0.5):
+def is_strategy_feasible(strategy, v0, hrvo_list, T_p, dt=2.0, tau=10.0):
     """
-    时间扩展 HRVO 可行性检测
+    时间扩展 HRVO 可行性检测（宽松模式）
 
-    核心创新: 检验策略在整个规划时域 [0, T_p] 内的时间一致性
-
-    对应论文约束:
-        ∀t ∈ [0, T_p], v_o(t; θ) ∉ HRVO_i
+    核心创新: 检验策略在规划时域后半段的时间一致性
+    从响应达到50%的时刻开始检测，允许初期穿过HRVO
 
     Args:
         strategy: 避让策略 (AvoidanceStrategy)
         v0: 初始速度向量
         hrvo_list: HRVO 列表
         T_p: 规划时域 (s)
-        dt: 时间步长 (s), 默认 0.5s
+        dt: 时间步长 (s), 默认 2.0s
+        tau: 机动响应时间常数 (s), 默认 10.0s
 
     Returns:
-        bool: True 如果策略在整个时域内可行
+        bool: True 如果策略在检测时域内可行
     """
     v0 = np.asarray(v0, dtype=float)
 
-    t = 0.0
-    while t <= T_p:
-        # 计算 t 时刻的速度
-        v_t = strategy.velocity_profile(v0, t)
+    # 首先检查最终速度是否可行（快速排除）
+    v_final = strategy.get_final_velocity(v0, tau)
+    for hrvo in hrvo_list:
+        if hrvo.contains(v_final):
+            return False
 
-        # 检查是否落入任何 HRVO
+    # 从响应50%时刻开始检测（跳过初期）
+    t_start = max(dt, 0.693 * tau)
+    t = t_start
+
+    while t <= T_p:
+        v_t = strategy.velocity_profile(v0, t, tau)
+
         for hrvo in hrvo_list:
             if hrvo.contains(v_t):
                 return False
@@ -44,9 +53,9 @@ def is_strategy_feasible(strategy, v0, hrvo_list, T_p, dt=0.5):
     return True
 
 
-def compute_feasibility_margin(strategy, v0, hrvo_list, T_p, dt=0.5):
+def compute_feasibility_margin(strategy, v0, hrvo_list, T_p, dt=2.0, tau=10.0):
     """
-    计算策略的可行性裕度
+    计算策略的可行性裕度（宽松模式）
 
     返回速度轨迹到 HRVO 边界的最小距离，
     正值表示可行，负值表示违反约束
@@ -57,6 +66,7 @@ def compute_feasibility_margin(strategy, v0, hrvo_list, T_p, dt=0.5):
         hrvo_list: HRVO 列表
         T_p: 规划时域 (s)
         dt: 时间步长 (s)
+        tau: 机动响应时间常数 (s)
 
     Returns:
         float: 可行性裕度
@@ -65,15 +75,24 @@ def compute_feasibility_margin(strategy, v0, hrvo_list, T_p, dt=0.5):
 
     min_margin = float('inf')
 
-    t = 0.0
+    # 从响应50%时刻开始检测
+    t_start = max(dt, 0.693 * tau)
+    t = t_start
+
     while t <= T_p:
-        v_t = strategy.velocity_profile(v0, t)
+        v_t = strategy.velocity_profile(v0, t, tau)
 
         for hrvo in hrvo_list:
             margin = hrvo.distance_to_boundary(v_t)
             min_margin = min(min_margin, margin)
 
         t += dt
+
+    # 也检查最终速度
+    v_final = strategy.get_final_velocity(v0, tau)
+    for hrvo in hrvo_list:
+        margin = hrvo.distance_to_boundary(v_final)
+        min_margin = min(min_margin, margin)
 
     return min_margin
 
